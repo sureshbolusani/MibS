@@ -25,6 +25,12 @@ MibSTreeNode::MibSTreeNode()
 
    lowerUpperBound_ = - ALPS_DBL_MAX;
    boundSet_ = false;
+   
+   //Suresh
+   lpStatus_ = BlisLpStatusUnknown;
+   dualInfoUsageStatus_ = true;
+   dual_ = NULL;
+   dj_ = NULL;
 
 }
 
@@ -36,6 +42,12 @@ MibSTreeNode::MibSTreeNode(AlpsNodeDesc *&desc)
    lowerUpperBound_ = - ALPS_DBL_MAX;
    boundSet_ = false;
 
+   //Suresh
+   lpStatus_ = BlisLpStatusUnknown;
+   dualInfoUsageStatus_ = true;
+   dual_ = NULL;
+   dj_ = NULL;
+
 }
 
 //#############################################################################
@@ -46,11 +58,22 @@ MibSTreeNode::MibSTreeNode(BlisModel *m)
    lowerUpperBound_ = - ALPS_DBL_MAX;
    boundSet_ = false;
 
+   //Suresh
+   lpStatus_ = BlisLpStatusUnknown;
+   dualInfoUsageStatus_ = true;
+   dual_ = NULL;
+   dj_ = NULL;
+
 }
 
 //#############################################################################
 MibSTreeNode::~MibSTreeNode()
 {
+
+    //TODO: will this destructor prevent from having duals info at the end of 
+    // MIBLP solve?
+    if (dual_) delete [] dual_;
+    if (dj_) delete [] dj_;
 
 }
 
@@ -102,6 +125,7 @@ MibSTreeNode::process(bool isRoot, bool rampUp)
 {
     BlisReturnStatus returnStatus = BlisReturnStatusUnknown;
     BlisLpStatus lpStatus = BlisLpStatusUnknown;
+    BlisLpStatus tempLpStatus = lpStatus;
     int j, k = -1;
     int numCols, numRows, numCoreCols, numCoreRows;
     int numStartRows, origNumStartRows;
@@ -340,7 +364,7 @@ MibSTreeNode::process(bool isRoot, bool rampUp)
             getKnowledgeBroker()->tempTimer().start();
         }
 
-	if (0)
+	if (1)
 	   model->solver()->writeLp("treenode");
 
         lpStatus = static_cast<BlisLpStatus> (bound(model));
@@ -360,6 +384,9 @@ MibSTreeNode::process(bool isRoot, bool rampUp)
                 }
             }
 	}
+
+        //Suresh
+        tempLpStatus = lpStatus;
         
         switch(lpStatus) {
         case BlisLpStatusOptimal:
@@ -393,11 +420,21 @@ MibSTreeNode::process(bool isRoot, bool rampUp)
                 // Update cutoff
                 cutoff = model->getCutoff();
                 setStatus(AlpsNodeStatusFathomed);
+                //Suresh
+                if (bS->LPSolStatus_ == MibSLPSolStatusInfeasible) {
+                    dualInfoUsageStatus_ = false;
+                }
 		goto TERM_PROCESS;
             }
             else {
                 if (quality_ > cutoff) {
                     setStatus(AlpsNodeStatusFathomed);
+                    //Suresh
+                    if (bS->isIntVarsFixed_) {
+                        dualInfoUsageStatus_ = false;
+                    } else {
+                        dualInfoUsageStatus_ = true;
+                    }
                     goto TERM_PROCESS;
                 }
                 needBranch = true;
@@ -643,11 +680,15 @@ MibSTreeNode::process(bool isRoot, bool rampUp)
             setStatus(AlpsNodeStatusFathomed);
             quality_ = -ALPS_OBJ_MAX;       // Remove it as soon as possilbe
 	    returnStatus = BlisReturnStatusInfeasible;
+            //Suresh
+            dualInfoUsageStatus_ = false;
             goto TERM_PROCESS;
         case BlisLpStatusDualObjLim:
             setStatus(AlpsNodeStatusFathomed);
             quality_ = -ALPS_OBJ_MAX;       // Remove it as soon as possilbe
 	    returnStatus = BlisReturnStatusOverObjLim;
+            //Suresh
+            dualInfoUsageStatus_ = true;
             goto TERM_PROCESS;
         case BlisLpStatusPrimalObjLim:
         case BlisLpStatusIterLim:
@@ -1437,7 +1478,7 @@ MibSTreeNode::process(bool isRoot, bool rampUp)
                             "BlisTreeNode");
         }
     }
-    
+
     //------------------------------------------------------
     // End of process()
     //------------------------------------------------------
@@ -1527,8 +1568,61 @@ MibSTreeNode::process(bool isRoot, bool rampUp)
 		  << ", node=" << index_ << std::endl;
     }
 #endif
+
+    //Suresh: added for MibS warm start
+    //TODO: should this be lpStatus or tempLpStatus or sth else?
+    lpStatus_ = tempLpStatus;
+    if (tempLpStatus != BlisLpStatusAbandoned && 
+            tempLpStatus != BlisLpStatusDualInfeasible) {
+        //TODO: are all cases of tempLpStatus covered properly here?
+        //TODO: is the tolerance usage correct?
+        setDualDj(model, mibsModel->getTolerance());
+    }
     
     return returnStatus;
+}
+
+//#############################################################################
+//Suresh
+void MibSTreeNode::setDualDj(BlisModel *model, double tol)
+{
+    int numRows = model->solver()->getNumRows();
+    int numCols = model->solver()->getNumCols();
+    int i, j, rowNum;
+    double value;
+
+    const CoinPackedMatrix *matrix = model->solver()->getMatrixByCol();
+    const int *matInd = matrix->getIndices();
+    const CoinBigIndex *matBeg = matrix->getVectorStarts();
+    const double *matVal = matrix->getElements();
+
+    const double *objCoeff = model->solver()->getObjCoefficients();
+    const double *lb = model->solver()->getColLower();
+    const double *ub = model->solver()->getColUpper();
+
+    dual_ = new double [numRows];
+    dj_ = new double [numCols];
+    lb_ = new double[numCols];
+    ub_ = new double[numCols];
+
+    memcpy(dual_, model->solver()->getRowPrice(), numRows * sizeof(double));
+    memcpy(dj_, model->solver()->getReducedCost(), numCols * sizeof(double));
+    //FIXME: delete following two lines after fixing leafBranchPath
+    memcpy(lb_, lb, numCols * sizeof(double));
+    memcpy(ub_, ub, numCols * sizeof(double));
+
+    /* djs may not be correct on fixed variables */
+    /* FIXME: following fix assumes minimization */
+    for (i = 0; i < numCols; i++) {
+        if (fabs(lb[i] - ub[i]) <= tol) {
+            value = objCoeff[i];
+            for (j = matBeg[i]; j < matBeg[i+1]; j++) {
+                rowNum = matInd[j];
+                value -= matVal[j]*dual_[rowNum];
+            }
+            dj_[i] = value;
+        }
+    }
 }
 
 //#############################################################################

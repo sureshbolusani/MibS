@@ -154,6 +154,22 @@ MibSBilevel::createBilevel(CoinPackedVector* sol,
     }
   }
 
+  isIntVarsFixed_ = true;
+
+  if(isIntegral_ == false){
+      isIntVarsFixed_ = false;
+  }
+  else{
+      for(i = 0; i < N; i ++){
+//          index = indices[i];
+          index = i;
+          if((mibs->solver()->isInteger(index)) && (fabs(upper[index] - lower[index] > etol))){
+              isIntVarsFixed_ = false;
+              break;
+          }
+      }
+  }
+
   for(i = 0; i < N; i ++){
       if(binarySearch(0, uN - 1, i, upperColInd) >= 0){
 	  if((fixedInd[i] == 1) && (fabs(upper[i] - lower[i]) > etol)){
@@ -391,6 +407,9 @@ MibSBilevel::checkBilevelFeasiblity(bool isRoot)
 	if(!lSolver->isProvenOptimal()){
 	    LPSolStatus_ = MibSLPSolStatusInfeasible;
 	    isProvenOptimal_ = false;
+	    if(isIntVarsFixed_){
+		shouldPrune_ = true;
+	    }
 	    if(useLinkingSolutionPool){
 	    //step 10
 	    //Adding x_L to set E
@@ -476,7 +495,13 @@ MibSBilevel::checkBilevelFeasiblity(bool isRoot)
 	    LPSolStatus_ = MibSLPSolStatusFeasible;
 	    useBilevelBranching_ = false;
 	    shouldPrune_ = true;
-	}
+	} else if (isIntVarsFixed_) {
+            //Suresh: pruning in case of bilevel infeasibility
+            //Note: this is valid only for pure integer bilevel problems (I think!)
+            shouldPrune_ = true;
+            isProvenOptimal_ = false;
+            useBilevelBranching_ = false;
+        }
 	if(!shouldPrune_){	
 	    //step 18
 	    if((tagInSeenLinkingPool_ != MibSLinkingPoolTagUBIsSolved) &&

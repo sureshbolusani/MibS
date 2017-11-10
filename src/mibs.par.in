@@ -1,9 +1,9 @@
-#Alps_instance ../data/notInterdiction/moore90.mps
-#MibS_auxiliaryInfoFile ../data/notInterdiction/moore90.txt
+Alps_instance ../data/notInterdiction/moore90.mps
+MibS_auxiliaryInfoFile ../data/notInterdiction/moore90.txt
 #Alps_instance ../data/interdiction/Assignment/2AP05-1.mps
 #MibS_auxiliaryInfoFile ../data/interdiction/Assignment/2AP05-1.txt
-Alps_instance ../data/interdiction/MCDM/NO_CORR/10_ITEMS_1000/K5010W03.KNP.mps
-MibS_auxiliaryInfoFile ../data/interdiction/MCDM/NO_CORR/10_ITEMS_1000/K5010W03.KNP.txt
+#Alps_instance ../data/interdiction/MCDM/NO_CORR/10_ITEMS_1000/K5010W03.KNP.mps
+#MibS_auxiliaryInfoFile ../data/interdiction/MCDM/NO_CORR/10_ITEMS_1000/K5010W03.KNP.txt
 Alps_timeLimit 3600
 #Alps_nodeLimit 4000000
 #Alps_nodeLimit 20000
@@ -17,6 +17,8 @@ Alps_timeLimit 3600
 
 #Alps_interClusterBalance 1      # 1: balancing load, 0: don't.
 #Alps_intraClusterBalance 1      # 1: balancing load, 0: don't.
+Alps_warmStart 1        # 0: no warm start, 1: warm start
+Alps_deleteDeadNode 0   # 0: do not delete dead node, 1: delete dead nodes on the fly
 
 #Alps_searchStrategy     4   # 0: Best, 1: Best-est, 2: Breath, 3: Depth, 4 hybrid
 #Alps_searchStrategyRampUp  0

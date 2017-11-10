@@ -82,7 +82,7 @@ am_libMibs_la_OBJECTS = MibSBranchStrategyStrong.lo MibSObjectInt.lo \
 	MibSBilevel.lo MibSParams.lo MibSBranchObjectInt.lo \
 	MibSCutGenerator.lo MibSBranchStrategyMaxInf.lo \
 	MibSSolution.lo MibSHeuristic.lo MibSBranchStrategyPseudo.lo \
-	MibSTreeNode.lo MibSBranchStrategyRel.lo MibSModel.lo
+	MibSTreeNode.lo MibSWarmStart.lo MibSBranchStrategyRel.lo MibSModel.lo
 libMibs_la_OBJECTS = $(am_libMibs_la_OBJECTS)
 binPROGRAMS_INSTALL = $(INSTALL_PROGRAM)
 PROGRAMS = $(bin_PROGRAMS)
@@ -360,6 +360,8 @@ libMibs_la_SOURCES = \
 	MibSTreeNode.cpp \
 	MibSBranchStrategyPseudo.hpp \
 	MibSTreeNode.hpp \
+        MibSWarmStart.cpp \
+        MibSWarmStart.hpp \
 	MibSBranchStrategyRel.cpp \
 	MibSModel.cpp \
 	MibSBranchStrategyRel.hpp \
@@ -407,6 +409,7 @@ includecoin_HEADERS = \
 	MibSBranchStrategyPseudo.hpp \
 	MibSHeuristic.hpp \
 	MibSTreeNode.hpp \
+        MibSWarmStart.hpp \
 	MibSBranchStrategyRel.hpp \
 	MibSModel.hpp \
 	MibSBranchStrategyStrong.hpp \
@@ -557,6 +560,7 @@ distclean-compile:
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/MibSParams.Plo@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/MibSSolution.Plo@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/MibSTreeNode.Plo@am__quote@
+@AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/MibSWarmStart.Plo@am__quote@
 
 .cpp.o:
 @am__fastdepCXX_TRUE@	if $(CXXCOMPILE) -MT $@ -MD -MP -MF "$(DEPDIR)/$*.Tpo" -c -o $@ $<; \

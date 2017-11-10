@@ -150,12 +150,21 @@ MibSBranchStrategyPseudo::createCandBranchObjects(int numPassesLeft, double ub)
         infObjects.clear();
         firstObjects.clear();
 
-	int index(0), found(0);
+	int index(0), found(0), existUnfixedIntVar(0);
+	int numSavedCand (0);
 
 	double value(0.0);
 
 	MibSBranchingStrategy branchPar = static_cast<MibSBranchingStrategy>
 	    (mibsmodel->MibSPar_->entry(MibSParams::branchStrategy));
+
+	//checking if there are any unfixed integer variables
+	for (i = 0; i < numCols; ++i) {
+	    if ((colType[i] != 'C') && (fabs(lower[i]-upper[i]) > etol)) {
+		existUnfixedIntVar = 1;
+		break;
+	    }
+	}
 
 	if(branchPar == MibSBranchingStrategyLinking){
 	    for (i = 0; i < uN; ++i){
@@ -193,9 +202,27 @@ MibSBranchStrategyPseudo::createCandBranchObjects(int numPassesLeft, double ub)
 						   (fabs(infeasibility) > etol))){
 			candidate[i] = 1;
 		    }
+		    else if((bS->isLinkVarsFixed_ == true) && (bS->isIntegral_ == true)){
+			if ((existUnfixedIntVar == 1) && (fabs(lower[i]-upper[i]) > etol)){
+			    candidate[i] = 1;
+			}
+			else if ((existUnfixedIntVar == 0) && (numSavedCand == 0)) {
+			    candidate[i] = 1;
+			    numSavedCand ++;
+			}
+		    }
 		}
 		else if(infeasibility > etol){
-		    candidate[i] = 1;
+		        candidate[i] = 1;
+		}
+		else if(bS->isIntegral_ == true) {
+		    if ((existUnfixedIntVar == 1) && (fabs(lower[i]-upper[i]) > etol)){
+			candidate[i] = 1;
+		    }
+		    else if ((existUnfixedIntVar == 0) && (numSavedCand == 0)) {
+			candidate[i] = 1;
+			numSavedCand ++;
+		    }
 		}
 	    }
 	}

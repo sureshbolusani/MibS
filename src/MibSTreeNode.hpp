@@ -29,6 +29,15 @@ class MibSTreeNode : public BlisTreeNode {
    
   double lowerUpperBound_;
   bool boundSet_;
+
+  //Suresh
+  BlisLpStatus lpStatus_;
+  bool dualInfoUsageStatus_;
+  double *dual_;
+  double *dj_;
+  //FIXME: remove following hard coding of bounds after fixing leafBranchPath in WS
+  double *lb_;
+  double *ub_;
   
  public:
   
@@ -44,6 +53,18 @@ class MibSTreeNode : public BlisTreeNode {
   inline double getLowerUB() {return lowerUpperBound_;}
   AlpsTreeNode* createNewTreeNode(AlpsNodeDesc *&desc) const;
   int process(bool isRoot, bool rampUp);
+
+  //Suresh
+  double * getDuals() {return dual_;}
+  double * getDjs() {return dj_;}
+  double * getLb() {return lb_;}
+  double * getUb() {return ub_;}
+  BlisLpStatus getLpStatus() {return lpStatus_;}
+  bool getDualInfoUsageStatus() {return dualInfoUsageStatus_;}
+
+ private:
+
+  void setDualDj(BlisModel *model, double tol);
 };
 
 #endif

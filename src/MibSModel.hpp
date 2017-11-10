@@ -18,11 +18,13 @@
 
 #include "OsiClpSolverInterface.hpp"
 
+#include "BcpsSubTree.h"
 #include "BlisModel.h"
 #include "BlisSolution.h"
 #include "MibSBilevel.hpp"
 #include "MibSParams.hpp"
 #include "MibSHelp.hpp"
+#include "MibSWarmStart.hpp"
 
 class MibSBilevel;
 class MibSCutGenerator;
@@ -215,7 +217,11 @@ private:
 
     std::map<std::vector<double>, LINKING_SOLUTION> seenLinkingSolutions;
     //std::map<std::vector<double>, LINKING_SOLUTION>::iterator it;
-    
+
+    //Suresh
+    /** MibS warm start object **/
+    MibSWarmStart *ws_;
+
 public:
 
     MibSModel();
@@ -340,7 +346,7 @@ public:
   
     /** Get the number of original constraints **/
     int getNumOrigCons() {return numOrigCons_;}
-  
+
     /** Get the upper-level row number **/
     int getUpperRowNum() {return upperRowNum_;}
 
@@ -349,6 +355,10 @@ public:
 
     /** Get the lower-level row number **/
     int getLowerRowNum() {return lowerRowNum_;}
+
+    //Suresh
+    /** Get structural row number **/
+    int getStructRowNum() {return structRowNum_;}
 
     /** Get bjective sense of lower-level problem **/
     double getLowerObjSense() {return lowerObjSense_;}
@@ -370,6 +380,10 @@ public:
 
     /** Get pointer to the LL row index array **/
     int * getLowerRowInd() {return lowerRowInd_;}
+
+    //Suresh
+    /** Get pointer to the structural row index array **/
+    int * getStructRowInd() {return structRowInd_;}
 
     /** Get pointer to the UL columns in LL problem array **/
     int * getFixedInd() {return fixedInd_;}
@@ -394,6 +408,10 @@ public:
 
     /** Get the interdiction budget **/
     double getInterdictBudget() {return interdictBudget_;}
+
+    // Suresh
+    /** Get original constraint coefficient matrix **/
+    CoinPackedMatrix * getOrigConstCoefMatrix() {return origConstCoefMatrix_;}
 
     /** Get the pointer to MibsBilevel **/
     inline MibSBilevel *getMibSBilevel() {return bS_;}
@@ -493,6 +511,27 @@ public:
     double lowerObjectiveBound();
 
     double interdictionBound();
+
+    //Suresh
+    MibSWarmStart * getMibsWarmStart() {return ws_;}
+    void setMibsWarmStart(MibSWarmStart *ws) {ws_ = ws;}
+    void generateMibsWarmStart(AlpsSubTree *ast);
+    int findLeafNodeNum(AlpsTreeNode *node);
+//    void collectLeafNodeData(AlpsTreeNode *node, MibSBranchObjectInt *bpath, 
+//            int *leafNum, int *leafDepth, BlisLpStatus *leafFeasibilityStatus,
+//            double *leafLowerBound, MibSBranchObjectInt **leafBranchPath,
+    void collectLeafNodeData(AlpsTreeNode *node, int *leafNum, double **leafLb, double **leafUb, 
+            int *leafDepth, BlisLpStatus *leafFeasibilityStatus,
+            double *leafLowerBound,
+            int *leafDualsNonzeroNum, int *leafDualsRowIndex,
+                int *leafDualsColIndex, double *leafDualsVal,
+            int *leafDjsNonzeroNum, int *leafDjsRowIndex,
+                int *leafDjsColIndex, double *leafDjsVal,
+            int *leafPosDjsNonzeroNum, int *leafPosDjsRowIndex,
+                int *leafPosDjsColIndex, double *leafPosDjsVal,
+            int *leafNegDjsNonzeroNum, int *leafNegDjsRowIndex,
+                int *leafNegDjsColIndex, double *leafNegDjsVal,
+                bool *leafDualInfoUsageStatus);
 
 private:
 

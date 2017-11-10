@@ -57,6 +57,8 @@ libMibs_la_SOURCES = \
 	MibSTreeNode.cpp \
 	MibSBranchStrategyPseudo.hpp \
 	MibSTreeNode.hpp \
+        MibSWarmStart.cpp \
+        MibSWarmStart.hpp \
 	MibSBranchStrategyRel.cpp \
 	MibSModel.cpp \
 	MibSBranchStrategyRel.hpp \
@@ -111,6 +113,7 @@ includecoin_HEADERS = \
 	MibSBranchStrategyPseudo.hpp \
 	MibSHeuristic.hpp \
 	MibSTreeNode.hpp \
+        MibSWarmStart.hpp \
 	MibSBranchStrategyRel.hpp \
 	MibSModel.hpp \
 	MibSBranchStrategyStrong.hpp \

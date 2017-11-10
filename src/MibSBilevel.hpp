@@ -44,6 +44,8 @@ class MibSBilevel {
 private:
 
     bool isIntegral_;
+    //sahar
+    bool isIntVarsFixed_;
     bool isUpperIntegral_;
     bool isLinkVarsIntegral_;
     bool useBilevelBranching_;
@@ -77,7 +79,7 @@ private:
    
 public:
    
-    MibSBilevel() : isIntegral_(true), isUpperIntegral_(true),
+    MibSBilevel() : isIntegral_(true), isIntVarsFixed_(false), isUpperIntegral_(true),
 		    isLinkVarsIntegral_(true), useBilevelBranching_(true),
 		    isLinkVarsFixed_(true), isProvenOptimal_(false),
 		    isLowerSolved_(false), isUBSolved_(false),

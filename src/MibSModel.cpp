@@ -142,6 +142,9 @@ MibSModel::initialize()
   MibSPar_ = new MibSParams;
   //maxAuxCols_ = 0; //FIXME: should make this a parameter
 
+  //Suresh
+  ws_ = new MibSWarmStart();
+
   MibSCutGenerator *cg = new MibSCutGenerator(this);
 
   cg->setStrategy(BlisCutStrategyPeriodic);
@@ -592,8 +595,9 @@ MibSModel::loadProblemData(const CoinPackedMatrix& matrix,
       int auxRows(auxULRows + interdictRows);
       int numTotalCols(0), numTotalRows(0);
       //int numAuxCols(2 * numCols);
-      int numAuxCols(1);
-      //int numAuxCols(0);//this breaks orig interdiction cut
+      //int numAuxCols(1);
+      //TODO: Suresh: comment following line and uncomment above line later!
+      int numAuxCols(0);//this breaks orig interdiction cut
       int i(0);
       
       //FIXME:  NEED TO CHANGE THIS AROUND
@@ -2857,6 +2861,8 @@ MibSModel::instanceStructure(const CoinPackedMatrix *newMatrix, const double* ro
 {
     
     /** Determines the properties of instance **/
+    //TODO: Suresh: enable cout statements again later!
+    /*
     std::cout<<"======================================="<<std::endl;                                                                                                              
     std::cout<<"             Problem Structure          "<<std::endl;                                                                                                             
     std::cout<<"======================================="<<std::endl;                                                                                                              
@@ -2864,6 +2870,7 @@ MibSModel::instanceStructure(const CoinPackedMatrix *newMatrix, const double* ro
     std::cout<<"Number of LL Variables: "<<lowerDim_<<std::endl;
     std::cout<<"Number of UL Rows: "<<upperRowNum_<<std::endl;                                                                                         
     std::cout<<"Number of LL Rows: "<<lowerRowNum_<<std::endl;
+    */
     
     int i(0),j(0),index(0);                                                                                                                                
     int numCols(numVars_);
@@ -2886,14 +2893,14 @@ MibSModel::instanceStructure(const CoinPackedMatrix *newMatrix, const double* ro
 		numUpperInt ++;
 	    }
 	}
-	std::cout <<"Number of integer UL Variables: " << numUpperInt << std::endl;
+//	std::cout <<"Number of integer UL Variables: " << numUpperInt << std::endl;
 	for(i = 0; i < lCols; i++){
 	    index = lColIndices[i];
 	    if(colType_[index] != 'C'){
 		numLowerInt++;
 	    }
 	}
-	std::cout <<"Number of integer LL Variables: " << numLowerInt << std::endl;
+//	std::cout <<"Number of integer LL Variables: " << numLowerInt << std::endl;
     }
 
 
@@ -2911,7 +2918,7 @@ MibSModel::instanceStructure(const CoinPackedMatrix *newMatrix, const double* ro
     
     //Checks general or interdiction 
     if(isInterdict_ == true){
-	std::cout << "This instance is an interdiction bilevel optimization problem." << std::endl;
+//	std::cout << "This instance is an interdiction bilevel optimization problem." << std::endl;
     }
 
     //Checks type of variables
@@ -2940,19 +2947,19 @@ MibSModel::instanceStructure(const CoinPackedMatrix *newMatrix, const double* ro
     }
 
     if(isPureInteger_ == true){
-	std::cout << "This instance is a pure integer bilevel optimization problem" << std::endl;
+//	std::cout << "This instance is a pure integer bilevel optimization problem" << std::endl;
     }
     else{
-	std::cout << "This instance is a mixed_integer bilevel optimization problem" << std::endl;
+//	std::cout << "This instance is a mixed_integer bilevel optimization problem" << std::endl;
     }
 	
                                                                                                                                                                          
     if(allUpperBin_ == true){
-	std::cout << "All of UL varibles are binary." << std::endl;
+//	std::cout << "All of UL varibles are binary." << std::endl;
     }                                                                                                                                                                             
                                                                                                                                                                                   
     if(allLowerBin_ == true){
-	std::cout << "All of LL varibles are binary." << std::endl; 
+//	std::cout << "All of LL varibles are binary." << std::endl; 
     }                                                                                                                                                                             
                                                                                                                                                                                   
     int nonZero (newMatrix->getNumElements());
@@ -3045,19 +3052,19 @@ MibSModel::instanceStructure(const CoinPackedMatrix *newMatrix, const double* ro
     }
     
     if(positiveA1_ == true){
-	std::cout << "Matrix A1 is positive." << std::endl;
+//	std::cout << "Matrix A1 is positive." << std::endl;
     }
     
     if(positiveG1_ == true){
-	std::cout << "Matrix G1 is positive." << std::endl;
+//	std::cout << "Matrix G1 is positive." << std::endl;
     }
     
     if(positiveA2_ == true){
-	std::cout << "Matrix A2 is positive." << std::endl;
+//	std::cout << "Matrix A2 is positive." << std::endl;
     }
     
     if(positiveG2_ == true){
-	std::cout << "Matrix G2 is positive." << std::endl;
+//	std::cout << "Matrix G2 is positive." << std::endl;
     }
 
     int paramValue(0), cutType(0);
@@ -3306,8 +3313,8 @@ MibSModel::instanceStructure(const CoinPackedMatrix *newMatrix, const double* ro
     }
     else if(MibSPar_->entry(MibSParams::branchStrategy) ==
 	    MibSBranchingStrategyFractional){
-	std::cout << "Branching procedure is set to 'MibSBranchingStrategyFractional'."
-		  << std::endl;
+//	std::cout << "Branching procedure is set to 'MibSBranchingStrategyFractional'."
+//		  << std::endl;
     }
 	
     //Setting parameters of solving (VF) and (UB)
@@ -3339,7 +3346,7 @@ MibSModel::instanceStructure(const CoinPackedMatrix *newMatrix, const double* ro
     }
 
     if(MibSPar_->entry(MibSParams::solveSecondLevelWhenXYVarsInt) == PARAM_ON){
-	std::cout << "'solveSecondLevelWhenXYVarsInt' is true." << std::endl;
+//	std::cout << "'solveSecondLevelWhenXYVarsInt' is true." << std::endl;
     }
     
     if(MibSPar_->entry(MibSParams::solveSecondLevelWhenXVarsInt) == PARAM_ON){
@@ -3376,10 +3383,255 @@ MibSModel::instanceStructure(const CoinPackedMatrix *newMatrix, const double* ro
 	std::cout << "'seenLinkingSolutions' pool is used." << std::endl;
     }
     else{
-	std::cout << "'seenLinkingSolutions' pool is not used." << std::endl;
+//	std::cout << "'seenLinkingSolutions' pool is not used." << std::endl;
     }
 	
     delete [] newRowSense;
 }
 
+//#############################################################################
+//Suresh: added for MibS warm starting feature
+void
+MibSModel::generateMibsWarmStart(AlpsSubTree *ast)
+{
+    AlpsTreeNode *root = ast->getRoot();
 
+    int leafNodeNum = findLeafNodeNum(root);
+
+    int *leafDepth = new int[leafNodeNum];
+    BlisLpStatus *leafFeasibilityStatus = new BlisLpStatus[leafNodeNum];
+    double *leafLowerBound = new double[leafNodeNum];
+//    MibSBranchObjectInt **leafBranchPath = new MibSBranchObjectInt*[leafNodeNum];
+    double **leafLb = new double*[leafNodeNum];
+    double **leafUb = new double*[leafNodeNum];
+    bool *leafDualInfoUsageStatus = new bool[leafNodeNum];
+
+    int leafDualsNonzeroNum = 0;
+    int *leafDualsRowIndex = new int[leafNodeNum*numCons_];
+    int *leafDualsColIndex = new int[leafNodeNum*numCons_];
+    double *leafDualsVal = new double[leafNodeNum*numCons_];
+
+    int leafDjsNonzeroNum = 0;
+    int *leafDjsRowIndex = new int[leafNodeNum*numVars_];
+    int *leafDjsColIndex = new int[leafNodeNum*numVars_];
+    double *leafDjsVal = new double[leafNodeNum*numVars_];
+
+    int leafPosDjsNonzeroNum = 0;
+    int *leafPosDjsRowIndex = new int[leafNodeNum*numVars_];
+    int *leafPosDjsColIndex = new int[leafNodeNum*numVars_];
+    double *leafPosDjsVal = new double[leafNodeNum*numVars_];
+
+    int leafNegDjsNonzeroNum = 0;
+    int *leafNegDjsRowIndex = new int[leafNodeNum*numVars_];
+    int *leafNegDjsColIndex = new int[leafNodeNum*numVars_];
+    double *leafNegDjsVal = new double[leafNodeNum*numVars_];
+
+//    MibSBranchObjectInt branchPath[ast->getKnowledgeBroker()->getTreeDepth()];
+
+    int leafNum = 0;
+
+//    collectLeafNodeData(root, branchPath, &leafNum,
+//            leafDepth, leafFeasibilityStatus, leafLowerBound, leafBranchPath,
+    collectLeafNodeData(root, &leafNum, leafLb, leafUb,
+            leafDepth, leafFeasibilityStatus, leafLowerBound,
+            &leafDualsNonzeroNum, leafDualsRowIndex, 
+                leafDualsColIndex, leafDualsVal,
+            &leafDjsNonzeroNum, leafDjsRowIndex,
+                leafDjsColIndex, leafDjsVal,
+            &leafPosDjsNonzeroNum, leafPosDjsRowIndex,
+                leafPosDjsColIndex, leafPosDjsVal,
+            &leafNegDjsNonzeroNum, leafNegDjsRowIndex,
+                leafNegDjsColIndex, leafNegDjsVal,
+                leafDualInfoUsageStatus);
+
+    assert(leafNum == leafNodeNum);
+
+    //Setting various data of warm start object
+    ws_->setLeafNodeNum(leafNodeNum);
+    //FIXME: Following five set functions are setting by simply assigining the 
+    //  pointer implying corresponding data cannot be 'deleted' in this function.
+    ws_->setMibsRootNode(root);
+    ws_->setLeafDepths(leafDepth);
+    ws_->setLeafFeasibilityStati(leafFeasibilityStatus);
+    ws_->setLeafDualInfoUsageStati(leafDualInfoUsageStatus);
+    ws_->setLeafLowerBounds(leafLowerBound);
+//    ws_->setLeafBranchPaths(leafBranchPath);
+    ws_->setLeafLBs(leafLb);
+    ws_->setLeafUBs(leafUb);
+    ws_->setLeafDualsByRow(new CoinPackedMatrix(false, leafDualsRowIndex, 
+            leafDualsColIndex, leafDualsVal, leafDualsNonzeroNum));
+    ws_->setLeafDjsByRow(new CoinPackedMatrix(false, leafDjsRowIndex, 
+            leafDjsColIndex, leafDjsVal, leafDjsNonzeroNum));
+    ws_->setLeafPosDjsByRow(new CoinPackedMatrix(false, leafPosDjsRowIndex, 
+            leafPosDjsColIndex, leafPosDjsVal, leafPosDjsNonzeroNum));
+    ws_->setLeafNegDjsByRow(new CoinPackedMatrix(false, leafNegDjsRowIndex, 
+            leafNegDjsColIndex, leafNegDjsVal, leafNegDjsNonzeroNum));
+
+    delete [] leafNegDjsVal;
+    delete [] leafNegDjsColIndex;
+    delete [] leafNegDjsRowIndex;
+    delete [] leafPosDjsVal;
+    delete [] leafPosDjsColIndex;
+    delete [] leafPosDjsRowIndex;
+    delete [] leafDjsVal;
+    delete [] leafDjsColIndex;
+    delete [] leafDjsRowIndex;
+    delete [] leafDualsVal;
+    delete [] leafDualsColIndex;
+    delete [] leafDualsRowIndex;
+}
+
+//#############################################################################
+//Suresh: added for MibS warm starting feature
+int
+MibSModel::findLeafNodeNum(AlpsTreeNode *node)
+{
+    //FIXME: This function is hard coded for dichotomy branching.
+    //  Need to fix this assumption?
+    assert(node);
+
+    int numChildren = node->getNumChildren();
+    if (!numChildren) {
+        return 1;
+    } else if (numChildren == 2) {
+        return (findLeafNodeNum(node->getChild(0)) + findLeafNodeNum(node->getChild(1)));
+    } else if (numChildren == 1) {
+        return (findLeafNodeNum(node->getChild(0)));
+    } else {
+        throw CoinError("Unknown number of children.",
+                "findLeafNodeNum",
+                "MibSModel");
+    }
+}
+
+//#############################################################################
+//Suresh: added for MibS warm starting feature
+void
+//MibSModel::collectLeafNodeData(AlpsTreeNode *node, MibSBranchObjectInt *bpath, 
+//        int *leafNum, int *leafDepth, BlisLpStatus *leafFeasibilityStatus,
+//        double *leafLowerBound, MibSBranchObjectInt **leafBranchPath,
+MibSModel::collectLeafNodeData(AlpsTreeNode *node, int *leafNum, double **leafLb, double **leafUb, 
+        int *leafDepth, BlisLpStatus *leafFeasibilityStatus,
+        double *leafLowerBound,
+        int *leafDualsNonzeroNum, int *leafDualsRowIndex,
+            int *leafDualsColIndex, double *leafDualsVal,
+        int *leafDjsNonzeroNum, int *leafDjsRowIndex,
+            int *leafDjsColIndex, double *leafDjsVal,
+        int *leafPosDjsNonzeroNum, int *leafPosDjsRowIndex,
+            int *leafPosDjsColIndex, double *leafPosDjsVal,
+        int *leafNegDjsNonzeroNum, int *leafNegDjsRowIndex,
+            int *leafNegDjsColIndex, double *leafNegDjsVal,
+            bool *leafDualInfoUsageStatus)
+{
+    if (node == NULL) {
+        throw CoinError("A valid node is required.",
+                "collectLeafNodeData",
+                "MibSModel");
+    }
+
+    int depth = node->getDepth();
+    int numChildren = node->getNumChildren();
+    int i;
+//    BcpsBranchObject *bObject;
+
+    //if depth>0, save the branching object
+    /*
+    if (depth) {
+        BcpsTreeNode *parent = dynamic_cast<BcpsTreeNode*>(node->getParent());
+        for (i = 0; i < parent->getNumChildren(); i++) {
+            if (parent->getChild(i) == node)
+                break;
+        }
+
+        bObject = const_cast<BcpsBranchObject*>(parent->branchObject());
+        bpath[depth-1] = MibSBranchObjectInt();
+        bpath[depth-1].setType(bObject->getType());
+        bpath[depth-1].setObjectIndex(bObject->getObjectIndex());
+        //TODO: is following direction setting correct?
+        bpath[depth-1].setDirection((i==0 ? -1 : 1));
+        bpath[depth-1].setValue(bObject->getValue());
+    }
+    */
+
+    //if numChildren>0, then do recursion on child nodes
+    for (i = 0; i < numChildren; i++) {
+//        collectLeafNodeData(node->getChild(i), bpath, leafNum,
+//                leafDepth, leafFeasibilityStatus, leafLowerBound, leafBranchPath,
+        collectLeafNodeData(node->getChild(i), leafNum, leafLb, leafUb,
+                leafDepth, leafFeasibilityStatus, leafLowerBound,
+                leafDualsNonzeroNum, leafDualsRowIndex, 
+                    leafDualsColIndex, leafDualsVal,
+                leafDjsNonzeroNum, leafDjsRowIndex,
+                    leafDjsColIndex, leafDjsVal,
+                leafPosDjsNonzeroNum, leafPosDjsRowIndex,
+                    leafPosDjsColIndex, leafPosDjsVal,
+                leafNegDjsNonzeroNum, leafNegDjsRowIndex,
+                    leafNegDjsColIndex, leafNegDjsVal,
+                    leafDualInfoUsageStatus);
+    }
+
+    //if numChildren=0, then copy and save various data
+    if (!numChildren) {
+        MibSTreeNode *mibsNode = dynamic_cast<MibSTreeNode*>(node);
+        //TODO: is this tolerance usage correct here?
+        double *duals = mibsNode->getDuals();
+        double *djs = mibsNode->getDjs();
+        double *lb = mibsNode->getLb();
+        double *ub = mibsNode->getUb();
+
+        for (i = 0; i < numCons_; i++) {
+            if (fabs(duals[i]) > etol_) {
+                leafDualsRowIndex[*leafDualsNonzeroNum] = *leafNum;
+                leafDualsColIndex[*leafDualsNonzeroNum] = i;
+                leafDualsVal[*leafDualsNonzeroNum] = duals[i];
+                *leafDualsNonzeroNum = *leafDualsNonzeroNum + 1;
+            }
+        }
+
+        for (i = 0; i < numVars_; i++) {
+            if ((fabs(djs[i]) > etol_) && (djs[i] > etol_)) {
+                leafDjsRowIndex[*leafDjsNonzeroNum] = *leafNum;
+                leafDjsColIndex[*leafDjsNonzeroNum] = i;
+                leafDjsVal[*leafDjsNonzeroNum] = djs[i];
+                *leafDjsNonzeroNum = *leafDjsNonzeroNum + 1;
+
+                leafPosDjsRowIndex[*leafPosDjsNonzeroNum] = *leafNum;
+                leafPosDjsColIndex[*leafPosDjsNonzeroNum] = i;
+                leafPosDjsVal[*leafPosDjsNonzeroNum] = djs[i];
+                *leafPosDjsNonzeroNum = *leafPosDjsNonzeroNum + 1;
+            }
+            if ((fabs(djs[i]) > etol_) && (djs[i] < -etol_)) {
+                leafDjsRowIndex[*leafDjsNonzeroNum] = *leafNum;
+                leafDjsColIndex[*leafDjsNonzeroNum] = i;
+                leafDjsVal[*leafDjsNonzeroNum] = djs[i];
+                *leafDjsNonzeroNum = *leafDjsNonzeroNum + 1;
+
+                leafNegDjsRowIndex[*leafNegDjsNonzeroNum] = *leafNum;
+                leafNegDjsColIndex[*leafNegDjsNonzeroNum] = i;
+                leafNegDjsVal[*leafNegDjsNonzeroNum] = djs[i];
+                *leafNegDjsNonzeroNum = *leafNegDjsNonzeroNum + 1;
+            }
+        }
+
+        /*
+        if (depth == 0) {
+            assert(*leafNum == 0);
+            bpath = NULL;
+            leafBranchPath[*leafNum] = NULL;
+        } else {
+            leafBranchPath[*leafNum] = new MibSBranchObjectInt[depth];
+            memcpy(leafBranchPath[*leafNum], bpath, sizeof(MibSBranchObjectInt)*depth);
+        }
+        */
+
+        leafLb[*leafNum] = new double[numVars_];
+        leafUb[*leafNum] = new double[numVars_];
+        memcpy(leafLb[*leafNum], lb, sizeof(double)*numVars_);
+        memcpy(leafUb[*leafNum], ub, sizeof(double)*numVars_);
+        leafDepth[*leafNum] = depth;
+        leafFeasibilityStatus[*leafNum] = mibsNode->getLpStatus();
+        leafLowerBound[*leafNum] = mibsNode->getQuality();
+        leafDualInfoUsageStatus[*leafNum] = mibsNode->getDualInfoUsageStatus();
+        *leafNum = *leafNum + 1;
+    }
+}
