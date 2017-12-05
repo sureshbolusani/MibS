@@ -758,18 +758,18 @@ MibSBilevel::setUpUBModel(OsiSolverInterface * oSolver, double objValLL,
 	nSolver = new OsiSymSolverInterface();
 #else
 	throw CoinError("SYMPHONY chosen as solver, but it has not been enabled",
-			"setUpModel", "MibsBilevel");
+			"setUpUBModel", "MibsBilevel");
 #endif
     }else if (feasCheckSolver == "CPLEX"){
 #ifdef COIN_HAS_CPLEX
 	nSolver = new OsiCpxSolverInterface();
 #else
 	throw CoinError("CPLEX chosen as solver, but it has not been enabled",
-			"setUpModel", "MibsBilevel");
+			"setUpUBModel", "MibsBilevel");
 #endif
     }else{
 	throw CoinError("Unknown solver chosen",
-			"setUpModel", "MibsBilevel");
+			"setUpUBModel", "MibsBilevel");
     }
     
 

@@ -92,7 +92,6 @@ OsiSolverInterface* getSolver(std::string problemSolver, int maxThreads,
 #ifdef COIN_HAS_CPLEX
         solver = new OsiCpxSolverInterface();
 
-        solver->setHintParam(OsiDoReducePrint);
         solver->messageHandler()->setLogLevel(0);
         CPXENVptr cpxEnv = 
             dynamic_cast<OsiCpxSolverInterface*>(solver)->getEnvironmentPtr();
@@ -144,7 +143,8 @@ bool solve(OsiSolverInterface *solver,
     }
     solver->setObjSense(objSense);
 
-    if (0) {
+    bool ind = true;
+    if (ind) {
         solver->writeLp("problemAtHand");
     }
 
@@ -177,29 +177,255 @@ void getDualData(OsiSolverInterface *solver, int *nodeNum, int **feasibilityStat
         int **lbCnt, int ***lbInd, double ***lbVal,
         int **ubCnt, int ***ubInd, double ***ubVal) {
 #ifdef COIN_HAS_SYMPHONY
-        sym_environment *env = dynamic_cast<OsiSymSolverInterface *> 
-            (solver)->getSymphonyEnvironment();
+    sym_environment *env = dynamic_cast<OsiSymSolverInterface *> 
+        (solver)->getSymphonyEnvironment();
 
-        sym_get_num_leaves(env, nodeNum);
+    sym_get_num_leaves(env, nodeNum);
 
-        *feasibilityStatus = new int[*nodeNum];
-        sym_get_leaf_feas_stats(env, *feasibilityStatus);
+    *feasibilityStatus = new int[*nodeNum];
+    sym_get_leaf_feas_stats(env, *feasibilityStatus);
 
-        *lbCnt = new int[*nodeNum];
-        *lbInd = new int*[*nodeNum];
-        *lbVal = new double*[*nodeNum];
-        *ubCnt = new int[*nodeNum];
-        *ubInd = new int*[*nodeNum];
-        *ubVal = new double*[*nodeNum];
-        sym_get_branchdesc_bounds(env, *lbCnt, *lbInd, *lbVal, *ubCnt, *ubInd, *ubVal);
+    *lbCnt = new int[*nodeNum];
+    *lbInd = new int*[*nodeNum];
+    *lbVal = new double*[*nodeNum];
+    *ubCnt = new int[*nodeNum];
+    *ubInd = new int*[*nodeNum];
+    *ubVal = new double*[*nodeNum];
+    sym_get_branchdesc_bounds(env, *lbCnt, *lbInd, *lbVal, *ubCnt, *ubInd, *ubVal);
 
-        sym_get_leaf_duals_by_row(env, dual);
-        sym_get_leaf_pos_djs_by_row(env, posDj);
-        sym_get_leaf_neg_djs_by_row(env, negDj);
+    sym_get_leaf_duals_by_row(env, dual);
+    sym_get_leaf_pos_djs_by_row(env, posDj);
+    sym_get_leaf_neg_djs_by_row(env, negDj);
+
+    /* Update dual information for infeasible nodes by solving their duals */
+    double symInfty = solver->getInfinity();
+    int i, j, infeasibleNodeNum = 0;
+    for (i = 0; i < *nodeNum; i++) {
+        //FIXME: this '4' corresponds to INFEASIBLE_PRUNED in SYMPHONY
+        if (*feasibilityStatus[i] == 4)
+            infeasibleNodeNum++;
+    }
+
+    if (infeasibleNodeNum) {
+        //Obtain problem data from SYMPHONY
+        int numCols, numRows;
+        double *objCoef, *colLb, *colUb, *rowLb, *rowUb, *rowRange, *rhs;
+        double objSense;
+        CoinPackedMatrix *matByRow;
+
+        numCols = solver->getNumCols();
+        numRows = solver->getNumRows();
+        objSense = solver->getObjSense();
+        //FIXME: Remove this fixme and error output upon making followup code 
+        //  of dual problem building robust.
+        if (objSense < 0) {
+            throw CoinError("Expected a minimization problem! FIXME!",
+                    "getDualData",
+                    "MibSMain");
+        }
+        objCoef = const_cast <double *> (solver->getObjCoefficients());
+        colLb = const_cast <double *> (solver->getColLower());
+        colUb = const_cast <double *> (solver->getColUpper());
+        rowLb = const_cast <double *> (solver->getRowLower());
+        rowUb = const_cast <double *> (solver->getRowUpper());
+        rowRange = const_cast <double *> (solver->getRowRange());
+        rhs = const_cast <double *> (solver->getRightHandSide());
+        matByRow = const_cast <CoinPackedMatrix *> (solver->getMatrixByRow());
+
+        //Data structures for dual problem of current node's LP
+        //Assumption: bounds are considered as cons in current node's LP
+        int dualNumCols, dualNumRows;
+        double *dualObjCoef, dualObjSense, *dualColLb, *dualColUb;
+        double *dualRowLb, *dualRowUb, dualObjVal, *dualBestSolution, *unbddRay;
+        char *dualColType;
+        CoinPackedMatrix *dualMatByCol;
+
+        dualNumRows = numCols;
+        dualObjSense = -objSense;
+        dualRowLb = objCoef;
+        dualRowUb = objCoef;
+        //Allocating max size to avoid repetitive allocation
+        dualNumCols = numRows + 2*numCols; //will be modified in each iteration
+        dualObjCoef = new double[dualNumCols];
+        memset(dualObjCoef, 0, sizeof(double)*dualNumCols);
+        dualColLb = new double[dualNumCols];
+        memset(dualColLb, 0, sizeof(double)*dualNumCols);
+        dualColUb = new double[dualNumCols];
+        memset(dualColUb, 0, sizeof(double)*dualNumCols);
+        dualBestSolution = new double[dualNumCols];
+        memset(dualBestSolution, 0, sizeof(double)*dualNumCols);
+        unbddRay = new double[dualNumCols];
+        memset(unbddRay, 0, sizeof(double)*dualNumCols);
+        dualColType = new char[dualNumCols];
+        //Setting fixed parts of entries
+        memcpy(dualObjCoef, rhs, sizeof(double)*numRows);
+        for (i = 0; i < numRows; i++) {
+            if ((rowLb[i] > -symInfty) && (rowUb[i] < symInfty)) {
+                throw CoinError("Ranged constraint detected! FIXME!",
+                        "getDualData",
+                        "MibSMain");
+            } else if (rowLb[i] > -symInfty) {
+                // >= type constraint
+                dualColLb[i] = 0;
+                dualColUb[i] = symInfty;
+            } else if (rowUb[i] < symInfty) {
+                // <= type constraint
+                dualColLb[i] = -symInfty;
+                dualColUb[i] = 0;
+            } else {
+                throw CoinError("Free constraint detected! FIXME!",
+                        "getDualData",
+                        "MibSMain");
+            }
+        }
+        for (i = 0; i < dualNumCols; i++) {
+            dualColType[i] = 'C';
+        }
+        matByRow->transpose();
+        dualMatByCol = new CoinPackedMatrix(*matByRow);
+
+        //Temporary bounds that will be changed in each iteration
+        double *tempColLb, *tempColUb;
+        tempColLb = new double[numCols];
+        tempColUb = new double[numCols];
+        //Temporary data structures (finite # of entries, indicators, IDs)
+        bool *finiteColLbInd, *finiteColUbInd;
+        int finiteColLbNum = 0, finiteColUbNum = 0;
+        int *finiteColLbId, *finiteColUbId;
+        finiteColLbInd = new bool[numCols];
+        memset(finiteColLbInd, 0, sizeof(bool)*numCols);
+        finiteColUbInd = new bool[numCols];
+        memset(finiteColUbInd, 0, sizeof(bool)*numCols);
+        finiteColLbId = new int[numCols];
+        finiteColUbId = new int[numCols];
+
+#ifdef COIN_HAS_CPLEX
+        bool isInfeasible = false;
+        std::string problemSolver = "CPLEX";
+        OsiSolverInterface *dualSolver;
+        for (i = 0; i < *nodeNum; i++) {
+            //FIXME: this '4' corresponds to INFEASIBLE_PRUNED in SYMPHONY
+            if (*feasibilityStatus[i] == 4) {
+                dualSolver = getSolver(problemSolver, 1, false);
+                dualSolver->setHintParam(OsiDoPresolveInInitial, false, OsiHintDo);
+                dualSolver->setHintParam(OsiDoDualInInitial, false, OsiHintDo);
+
+                /* Setting variable parts of entries (obj. coeff, matrix, col. bounds) */
+                //At first, build current node's bounds into 'temp' structures
+                memcpy(tempColLb, colLb, sizeof(double)*numCols);
+                memcpy(tempColUb, colUb, sizeof(double)*numCols);
+                int cnt = *lbCnt[i];
+                for (j = 0; j < cnt; j++) {
+                    if (*lbVal[i][j] > tempColLb[*lbInd[i][j]]) {
+                        tempColLb[*lbInd[i][j]] = *lbVal[j][j];
+                    }
+                }
+                cnt = *ubCnt[i];
+                for (j = 0; j < cnt; j++) {
+                    if (*ubVal[i][j] < tempColUb[*ubInd[i][j]]) {
+                        tempColUb[*ubInd[i][j]] = *ubVal[i][j];
+                    }
+                }
+                //Now, set variable parts of entries as required
+                dualNumCols = numRows;
+                finiteColLbNum = 0;
+                for (j = 0; j < numCols; j++) {
+                    if (tempColLb[j] > -symInfty) {
+                        dualObjCoef[dualNumCols] = tempColLb[j];
+                        dualColLb[dualNumCols] = 0;
+                        dualColUb[dualNumCols] = symInfty;
+
+                        CoinPackedVector col;
+                        col.insert(j, 1);
+                        dualMatByCol->appendCol(col);
+
+                        finiteColLbInd[j] = 1;
+                        finiteColLbNum++;
+                        finiteColLbId[j] = dualNumCols;
+                        dualNumCols++;
+                    } else {
+                        finiteColLbId[j] = -1;
+                    }
+                }
+                finiteColUbNum = 0;
+                for (j = 0; j < numCols; j++) {
+                    if (tempColUb[j] < symInfty) {
+                        dualObjCoef[dualNumCols] = tempColUb[j];
+                        dualColLb[dualNumCols] = -symInfty;
+                        dualColUb[dualNumCols] = 0;
+
+                        CoinPackedVector col;
+                        col.insert(j, 1);
+                        dualMatByCol->appendCol(col);
+
+                        finiteColUbInd[j] = 1;
+                        finiteColUbNum++;
+                        finiteColUbId[j] = dualNumCols;
+                        dualNumCols++;
+                    } else {
+                        finiteColUbId[j] = -1;
+                    }
+                }
+
+                //Solving the dual of current node's LP
+                isInfeasible = solve(dualSolver,
+                        dualNumCols, dualObjCoef, dualObjSense,
+                        dualColLb, dualColUb, dualColType,
+                        dualMatByCol, dualRowLb, dualRowUb,
+                        &dualObjVal, dualBestSolution);
+                memcpy(unbddRay, dualSolver->getPrimalRays(1)[0], sizeof(double)*dualNumCols);
+                delete dualSolver;
+
+                //Find appropriate multiplier for unbounded ray
+                //FIXME: improve following bigM later!
+                double bigM = 1e+8, lambda = 0, objCoefRayProd = 0;
+                for (j = 0; j < dualNumCols; j++) {
+                    objCoefRayProd += dualObjCoef[j]*unbddRay[j];
+                }
+                lambda = (bigM - dualObjVal)/(objCoefRayProd);
+
+                //Update dual, posDj and negDj matrices
+                for (j = 0; j < numRows; j++) {
+                    dual->modifyCoefficient(i, j, (dualBestSolution[j] + lambda * unbddRay[j]), false);
+                }
+                double djVal = 0;
+                for (j = 0; j < numCols; j++) {
+                    if (finiteColLbInd[j] && finiteColUbInd[j]) {
+                        //Check that only one of two values is nonzero
+                        double temp1 = dualBestSolution[finiteColLbId[j]] + unbddRay[finiteColLbId[j]];
+                        double temp2 = dualBestSolution[finiteColUbId[j]] + unbddRay[finiteColUbId[j]];
+                        assert(!(temp1 && temp2));
+                        if (temp1) {
+                            djVal = temp1;
+                        } else {
+                            djVal = temp2;
+                        }
+                    } else if (finiteColLbInd[j]) {
+                        djVal = dualBestSolution[finiteColLbId[j]] + lambda * unbddRay[finiteColLbId[j]];
+                    } else if (finiteColUbInd[j]) {
+                        djVal = dualBestSolution[finiteColUbId[j]] + lambda * unbddRay[finiteColUbId[j]];
+                    }
+                    //FIXME: use a tolerance here
+                    if (djVal > 0) {
+                        posDj->modifyCoefficient(i, j, djVal, false);
+                    } else if (djVal < 0) {
+                        negDj->modifyCoefficient(i, j, djVal, false);
+                    }
+                }
+            }
+        }
+
 #else
-        throw CoinError("SYMPHONY chosen as solver but it has not been enabled",
+        throw CoinError("CPLEX is disabled while trying to use it for resolving infeasible nodes",
                 "getDualData",
                 "MibSMain");
+#endif
+    }
+
+#else
+    throw CoinError("SYMPHONY chosen as solver but it has not been enabled",
+            "getDualData",
+            "MibSMain");
 #endif
 }
 
@@ -215,6 +441,8 @@ int main(int argc, char* argv[])
 
     //FIXME: It is assumed that lower rows follow strictly after upper rows.
     //  Is it OK? Does MibS do this reformulation internally or not?
+
+    //FIXME: objVals are uninitialized before passing to "solve" function.
 
     try{
        
@@ -316,7 +544,6 @@ int main(int argc, char* argv[])
       //One more row for objective-bound type constraint
       int *subproblemLowerColInd = new int[subproblemColNum];
       CoinIotaN(subproblemLowerColInd, subproblemColNum, 0);
-      subproblemMat.appendRow(subproblemColNum, subproblemLowerColInd, lowerObjCoef);
 
       //Matrix of lower level row coeffs for upper level cols (A^2 x)
       CoinPackedMatrix lowerMatOfUpperCols(rowCoefMatrixByCol);
@@ -392,6 +619,8 @@ int main(int argc, char* argv[])
       int **leafUbInd = NULL;
       double **leafLbVal = NULL;
       double **leafUbVal = NULL;
+      //For detecting infeasible leaf nodes
+      int feasibleLeafNodeNum, *feasibleLeafNodeInd;
 
 
       /** Initial setup for MILP master problem **/
@@ -627,27 +856,26 @@ int main(int argc, char* argv[])
                           << std::endl;
                       return 0;
                   }
+
+                  /* Updating subproblem data with new info. from continuous restriction */
+                  if (!iterCounter) {
+                      subproblemMat.appendRow(subproblemColNum, subproblemLowerColInd, lowerObjCoef);
+                  }
+                  if (lowerObjSense == 1) {
+                      subproblemRowLb[lowerRowNum] = -infinity;
+                      subproblemRowUb[lowerRowNum] = contRestObjVal;
+                  } else {
+                      subproblemRowLb[lowerRowNum] = contRestObjVal;
+                      subproblemRowUb[lowerRowNum] = infinity;
+                  }
+                  subproblemRhs[lowerRowNum] = contRestObjVal;
               } else {
-                  //FIXME: What here?
-                  //    Option-1: simply say that UBF=infty, solve subproblem and go ahead.
-                  //    Option-2: skip solving subproblem and go ahead solving master problem
-                  //        by adding a bound cut of type cx > cx^* to remove earlier x solution?
                   contRestObjVal = infinity;
-                  throw CoinError("Second level problem is infeasible for the given first level solution",
-                          "Main",
-                          "MibSMain");
+//                  throw CoinError("Second level problem is infeasible for the given first level solution",
+//                          "Main",
+//                          "MibSMain");
               }
 
-
-              /* Updating subproblem data with new info. from continuous restriction */
-              if (lowerObjSense == 1) {
-                  subproblemRowLb[lowerRowNum] = -infinity;
-                  subproblemRowUb[lowerRowNum] = contRestObjVal;
-              } else {
-                  subproblemRowLb[lowerRowNum] = contRestObjVal;
-                  subproblemRowUb[lowerRowNum] = infinity;
-              }
-              subproblemRhs[lowerRowNum] = contRestObjVal;
 
               /** Solving the subproblem **/
               solver = getSolver(subproblemSolver, subproblemMaxThreads, true);
@@ -664,7 +892,17 @@ int main(int argc, char* argv[])
                       leafDualByRow, leafPosDjByRow, leafNegDjByRow,
                       &leafLbCnt, &leafLbInd, &leafLbVal,
                       &leafUbCnt, &leafUbInd, &leafUbVal);
+
               delete solver;
+
+              /* Check bilevel feasibility */
+              if (!subproblemInfeasible) {
+                  double level2ObjValForSubproblemSol = 0;
+                  for (i = 0; i < lowerColNum; i++) {
+                      leve2ObjValForSubproblemSol += subproblemBestSolution[i]*lowerObjCoef[i];
+                  }
+                  assert(fabs(level2ObjValForSubproblemSol - level2ObjVal) <= etol);
+              }
           }
 
 
@@ -842,18 +1080,10 @@ int main(int argc, char* argv[])
               //END finding products
 
               /* Updating master problem's matrices and vectors/arrays */
-              int feasibleLeafNodeNum = 0;
-              //Note: actual size of following would be feasibleLeafNodeNum
-              int *feasibleLeafNodeInd = new int[leafNodeNum];
-              memset(feasibleLeafNodeInd, 0, sizeof(int)*leafNodeNum);
-              for (i = 0; i < leafNodeNum; i++) {
-                  //FIXME: this '4' corresponds to INFEASIBLE_PRUNED in SYMPHONY
-                  if (leafFeasibilityStatus[i] != 4) {
-                      //TODO: All all other stati good to consider here?
-                      feasibleLeafNodeInd[feasibleLeafNodeNum] = i;
-                      feasibleLeafNodeNum++;
-                  }
-              }
+              //FIXME: remove feasibleLeafNodeNum and feasibleLeafNodeInd later!
+              feasibleLeafNodeNum = leafNodeNum;
+              feasibleLeafNodeInd = new int[feasibleLeafNodeNum];
+              CoinIotaN(feasibleLeafNodeInd, feasibleLeafNodeNum, 0);
               // Note: new # of cols = old # of cols + (upperColNum + 2)*feasibleLeafNodeNum + 1
               // Note: new # of rows = old # of rows + (4 * upperColNum + 3)*feasibleLeafNodeNum + 2*lowerRowNum + 1
 
@@ -1040,7 +1270,6 @@ int main(int argc, char* argv[])
               delete [] newColStarts;
               delete [] ubNegDjProduct;
               delete [] lbPosDjProduct;
-              delete [] feasibleLeafNodeInd;
           } else {
               std::cout << std::endl;
               std::cout << "Iter-" << iterCounter << std::endl;
@@ -1068,6 +1297,7 @@ int main(int argc, char* argv[])
 //      delete [] lowerObjCoef;
       delete [] lowerIntColInd;
 //      delete [] lowerColInd;
+      delete [] feasibleLeafNodeInd;
     }
     catch(CoinError& er) {
 	std::cerr << "ERROR:" << er.message() << std::endl
