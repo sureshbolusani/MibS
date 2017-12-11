@@ -202,7 +202,7 @@ void getDualData(OsiSolverInterface *solver, int *nodeNum, int **feasibilityStat
     int i, j, infeasibleNodeNum = 0;
     for (i = 0; i < *nodeNum; i++) {
         //FIXME: this '4' corresponds to INFEASIBLE_PRUNED in SYMPHONY
-        if (*feasibilityStatus[i] == 4)
+        if (feasibilityStatus[0][i] == 4)
             infeasibleNodeNum++;
     }
 
@@ -236,7 +236,8 @@ void getDualData(OsiSolverInterface *solver, int *nodeNum, int **feasibilityStat
         //Assumption: bounds are considered as cons in current node's LP
         int dualNumCols, dualNumRows;
         double *dualObjCoef, dualObjSense, *dualColLb, *dualColUb;
-        double *dualRowLb, *dualRowUb, dualObjVal, *dualBestSolution, *unbddRay;
+        double *dualRowLb, *dualRowUb, dualObjVal, *dualBestSolution;
+        double *unbddRay, *correctFullDual;
         char *dualColType;
         CoinPackedMatrix *dualMatByCol;
 
@@ -256,6 +257,8 @@ void getDualData(OsiSolverInterface *solver, int *nodeNum, int **feasibilityStat
         memset(dualBestSolution, 0, sizeof(double)*dualNumCols);
         unbddRay = new double[dualNumCols];
         memset(unbddRay, 0, sizeof(double)*dualNumCols);
+        correctFullDual = new double[dualNumCols];
+        memset(correctFullDual, 0, sizeof(double)*dualNumCols);
         dualColType = new char[dualNumCols];
         //Setting fixed parts of entries
         memcpy(dualObjCoef, rhs, sizeof(double)*numRows);
@@ -288,16 +291,17 @@ void getDualData(OsiSolverInterface *solver, int *nodeNum, int **feasibilityStat
         double *tempColLb, *tempColUb;
         tempColLb = new double[numCols];
         tempColUb = new double[numCols];
-        //Temporary data structures (finite # of entries, indicators, IDs)
+        //Temporary data structures (finite value indicators, IDs, reverse IDs)
         bool *finiteColLbInd, *finiteColUbInd;
-        int finiteColLbNum = 0, finiteColUbNum = 0;
-        int *finiteColLbId, *finiteColUbId;
+        int *finiteColLbId, *finiteColUbId, *reverseId;
         finiteColLbInd = new bool[numCols];
         memset(finiteColLbInd, 0, sizeof(bool)*numCols);
         finiteColUbInd = new bool[numCols];
         memset(finiteColUbInd, 0, sizeof(bool)*numCols);
         finiteColLbId = new int[numCols];
         finiteColUbId = new int[numCols];
+        reverseId = new int[dualNumCols];
+        CoinIotaN(reverseId, numRows, 0);
 
 #ifdef COIN_HAS_CPLEX
         bool isInfeasible = false;
@@ -305,7 +309,7 @@ void getDualData(OsiSolverInterface *solver, int *nodeNum, int **feasibilityStat
         OsiSolverInterface *dualSolver;
         for (i = 0; i < *nodeNum; i++) {
             //FIXME: this '4' corresponds to INFEASIBLE_PRUNED in SYMPHONY
-            if (*feasibilityStatus[i] == 4) {
+            if (feasibilityStatus[0][i] == 4) {
                 dualSolver = getSolver(problemSolver, 1, false);
                 dualSolver->setHintParam(OsiDoPresolveInInitial, false, OsiHintDo);
                 dualSolver->setHintParam(OsiDoDualInInitial, false, OsiHintDo);
@@ -314,21 +318,20 @@ void getDualData(OsiSolverInterface *solver, int *nodeNum, int **feasibilityStat
                 //At first, build current node's bounds into 'temp' structures
                 memcpy(tempColLb, colLb, sizeof(double)*numCols);
                 memcpy(tempColUb, colUb, sizeof(double)*numCols);
-                int cnt = *lbCnt[i];
+                int cnt = lbCnt[0][i];
                 for (j = 0; j < cnt; j++) {
-                    if (*lbVal[i][j] > tempColLb[*lbInd[i][j]]) {
-                        tempColLb[*lbInd[i][j]] = *lbVal[j][j];
+                    if (lbVal[0][i][j] > tempColLb[lbInd[0][i][j]]) {
+                        tempColLb[lbInd[0][i][j]] = lbVal[0][i][j];
                     }
                 }
-                cnt = *ubCnt[i];
+                cnt = ubCnt[0][i];
                 for (j = 0; j < cnt; j++) {
-                    if (*ubVal[i][j] < tempColUb[*ubInd[i][j]]) {
-                        tempColUb[*ubInd[i][j]] = *ubVal[i][j];
+                    if (ubVal[0][i][j] < tempColUb[ubInd[0][i][j]]) {
+                        tempColUb[ubInd[0][i][j]] = ubVal[0][i][j];
                     }
                 }
                 //Now, set variable parts of entries as required
                 dualNumCols = numRows;
-                finiteColLbNum = 0;
                 for (j = 0; j < numCols; j++) {
                     if (tempColLb[j] > -symInfty) {
                         dualObjCoef[dualNumCols] = tempColLb[j];
@@ -340,14 +343,13 @@ void getDualData(OsiSolverInterface *solver, int *nodeNum, int **feasibilityStat
                         dualMatByCol->appendCol(col);
 
                         finiteColLbInd[j] = 1;
-                        finiteColLbNum++;
                         finiteColLbId[j] = dualNumCols;
+                        reverseId[dualNumCols] = j;
                         dualNumCols++;
                     } else {
                         finiteColLbId[j] = -1;
                     }
                 }
-                finiteColUbNum = 0;
                 for (j = 0; j < numCols; j++) {
                     if (tempColUb[j] < symInfty) {
                         dualObjCoef[dualNumCols] = tempColUb[j];
@@ -359,8 +361,8 @@ void getDualData(OsiSolverInterface *solver, int *nodeNum, int **feasibilityStat
                         dualMatByCol->appendCol(col);
 
                         finiteColUbInd[j] = 1;
-                        finiteColUbNum++;
                         finiteColUbId[j] = dualNumCols;
+                        reverseId[dualNumCols] = j;
                         dualNumCols++;
                     } else {
                         finiteColUbId[j] = -1;
@@ -377,23 +379,154 @@ void getDualData(OsiSolverInterface *solver, int *nodeNum, int **feasibilityStat
                 delete dualSolver;
 
                 //Find appropriate multiplier for unbounded ray
-                //FIXME: improve following bigM later!
-                double bigM = 1e+8, lambda = 0, objCoefRayProd = 0;
+                //FIXME: Use isInfeasible as well as improve following bigM & etol later!
+                double bigM = 1e+8, etol = 1e-7, lambda = 0, objCoefRayProd = 0;
+                int nzDual = 0, nzPosDj = 0, nzNegDj = 0;
+                int maxColIndDualNz = -1, maxColIndPosDjNz = -1, maxColIndNegDjNz = -1;
                 for (j = 0; j < dualNumCols; j++) {
                     objCoefRayProd += dualObjCoef[j]*unbddRay[j];
                 }
                 lambda = (bigM - dualObjVal)/(objCoefRayProd);
 
-                //Update dual, posDj and negDj matrices
-                for (j = 0; j < numRows; j++) {
-                    dual->modifyCoefficient(i, j, (dualBestSolution[j] + lambda * unbddRay[j]), false);
+                //Evaluate full currect dual
+                for (j = 0; j < dualNumCols; j++) {
+                    correctFullDual[j] = dualBestSolution[j] + lambda * unbddRay[j];
+                    if (fabs(correctFullDual[j]) > etol) {
+                        if (j < numRows) {
+                            nzDual++;
+                            maxColIndDualNz = j;
+                        } else if (correctFullDual[j] > etol) {
+                            nzPosDj++;
+                            maxColIndPosDjNz = reverseId[j];
+                        } else if (correctFullDual[j] < -etol) {
+                            nzNegDj++;
+                            maxColIndNegDjNz = reverseId[j];
+                        }
+                    }
                 }
+
+                //Update dual matrix
+                int majorDim = dual->getMajorDim();
+                int minorDim = dual->getMinorDim();
+                if ((maxColIndDualNz >= 0) && !majorDim && !minorDim) {
+                    //Dual matrix is currently empty
+                    int newRowNum = i + 1;
+                    CoinBigIndex *newRowStarts = new CoinBigIndex[newRowNum + 1];
+                    memset(newRowStarts, 0, sizeof(CoinBigIndex)*(newRowNum + 1));
+                    int errorNum = dual->appendRows(newRowNum, newRowStarts,
+                            NULL, NULL, maxColIndDualNz + 1);
+                    delete [] newRowStarts;
+                    assert(errorNum == 0);
+                    majorDim = dual->getMajorDim();
+                    minorDim = dual->getMinorDim();
+                }
+                if ((maxColIndDualNz + 1) > minorDim) {
+                    //Minor dimension is not large enough! Append extra columns of all zeroes.
+                    int newColNum = maxColIndDualNz + 1 - minorDim;
+                    CoinBigIndex *newColStarts = new CoinBigIndex[newColNum + 1];
+                    memset(newColStarts, 0, sizeof(CoinBigIndex)*(newColNum + 1));
+                    int errorNum = dual->appendCols(newColNum, newColStarts,
+                            NULL, NULL, majorDim);
+                    delete [] newColStarts;
+                    assert(errorNum == 0);
+                    minorDim = maxColIndDualNz + 1;
+                }
+                if ((maxColIndDualNz >= 0) && (i >= majorDim)) {
+                    //Major dimension is not large enough! Append extra rows of all zeroes.
+                    int newRowNum = i + 1 - majorDim;
+                    CoinBigIndex *newRowStarts = new CoinBigIndex[newRowNum + 1];
+                    memset(newRowStarts, 0, sizeof(CoinBigIndex)*(newRowNum + 1));
+                    int errorNum = dual->appendRows(newRowNum, newRowStarts,
+                            NULL, NULL, minorDim);
+                    delete [] newRowStarts;
+                    assert(errorNum == 0);
+                }
+                //Now, both the minor and major dimensions are large enough
+                for (j = 0; j < numRows; j++) {
+                    dual->modifyCoefficient(i, j, correctFullDual[j], false);
+                }
+
+                //Expand posDj matrix if required
+                majorDim = posDj->getMajorDim();
+                minorDim = posDj->getMinorDim();
+                if ((maxColIndPosDjNz >= 0) && !majorDim && !minorDim) {
+                    //posDj matrix is currently empty
+                    int newRowNum = i + 1;
+                    CoinBigIndex *newRowStarts = new CoinBigIndex[newRowNum + 1];
+                    memset(newRowStarts, 0, sizeof(CoinBigIndex)*(newRowNum + 1));
+                    int errorNum = posDj->appendRows(newRowNum, newRowStarts,
+                            NULL, NULL, maxColIndPosDjNz + 1);
+                    delete [] newRowStarts;
+                    assert(errorNum == 0);
+                    majorDim = posDj->getMajorDim();
+                    minorDim = posDj->getMinorDim();
+                }
+                if ((maxColIndPosDjNz + 1) > minorDim) {
+                    //Minor dimension is not large enough! Append extra columns of all zeroes.
+                    int newColNum = maxColIndPosDjNz + 1 - minorDim;
+                    CoinBigIndex *newColStarts = new CoinBigIndex[newColNum + 1];
+                    memset(newColStarts, 0, sizeof(CoinBigIndex)*(newColNum + 1));
+                    int errorNum = posDj->appendCols(newColNum, newColStarts,
+                            NULL, NULL, majorDim);
+                    delete [] newColStarts;
+                    assert(errorNum == 0);
+                    minorDim = maxColIndPosDjNz + 1;
+                }
+                if ((maxColIndPosDjNz >= 0) && (i >= majorDim)) {
+                    //Major dimension is not large enough! Append extra rows of all zeroes.
+                    int newRowNum = i + 1 - majorDim;
+                    CoinBigIndex *newRowStarts = new CoinBigIndex[newRowNum + 1];
+                    memset(newRowStarts, 0, sizeof(CoinBigIndex)*(newRowNum + 1));
+                    int errorNum = posDj->appendRows(newRowNum, newRowStarts,
+                            NULL, NULL, minorDim);
+                    delete [] newRowStarts;
+                    assert(errorNum == 0);
+                }
+
+                //Expand negDj matrix if required
+                majorDim = negDj->getMajorDim();
+                minorDim = negDj->getMinorDim();
+                if ((maxColIndNegDjNz >= 0) && !majorDim && !minorDim) {
+                    //negDj matrix is currently empty
+                    int newRowNum = i + 1;
+                    CoinBigIndex *newRowStarts = new CoinBigIndex[newRowNum + 1];
+                    memset(newRowStarts, 0, sizeof(CoinBigIndex)*(newRowNum + 1));
+                    int errorNum = negDj->appendRows(newRowNum, newRowStarts,
+                            NULL, NULL, maxColIndNegDjNz + 1);
+                    delete [] newRowStarts;
+                    assert(errorNum == 0);
+                    majorDim = negDj->getMajorDim();
+                    minorDim = negDj->getMinorDim();
+                }
+                if ((maxColIndNegDjNz + 1) > minorDim) {
+                    //Minor dimension is not large enough! Append extra columns of all zeroes.
+                    int newColNum = maxColIndNegDjNz + 1 - minorDim;
+                    CoinBigIndex *newColStarts = new CoinBigIndex[newColNum + 1];
+                    memset(newColStarts, 0, sizeof(CoinBigIndex)*(newColNum + 1));
+                    int errorNum = negDj->appendCols(newColNum, newColStarts,
+                            NULL, NULL, majorDim);
+                    delete [] newColStarts;
+                    assert(errorNum == 0);
+                    minorDim = maxColIndNegDjNz + 1;
+                }
+                if ((maxColIndNegDjNz >= 0) && (i >= majorDim)) {
+                    //Major dimension is not large enough! Append extra rows of all zeroes.
+                    int newRowNum = i + 1 - majorDim;
+                    CoinBigIndex *newRowStarts = new CoinBigIndex[newRowNum + 1];
+                    memset(newRowStarts, 0, sizeof(CoinBigIndex)*(newRowNum + 1));
+                    int errorNum = negDj->appendRows(newRowNum, newRowStarts,
+                            NULL, NULL, minorDim);
+                    delete [] newRowStarts;
+                    assert(errorNum == 0);
+                }
+
+                //Now, both posDj and negDj matrices have large enough dimensions
                 double djVal = 0;
                 for (j = 0; j < numCols; j++) {
                     if (finiteColLbInd[j] && finiteColUbInd[j]) {
                         //Check that only one of two values is nonzero
-                        double temp1 = dualBestSolution[finiteColLbId[j]] + unbddRay[finiteColLbId[j]];
-                        double temp2 = dualBestSolution[finiteColUbId[j]] + unbddRay[finiteColUbId[j]];
+                        double temp1 = correctFullDual[finiteColLbId[j]];
+                        double temp2 = correctFullDual[finiteColUbId[j]];
                         assert(!(temp1 && temp2));
                         if (temp1) {
                             djVal = temp1;
@@ -401,14 +534,13 @@ void getDualData(OsiSolverInterface *solver, int *nodeNum, int **feasibilityStat
                             djVal = temp2;
                         }
                     } else if (finiteColLbInd[j]) {
-                        djVal = dualBestSolution[finiteColLbId[j]] + lambda * unbddRay[finiteColLbId[j]];
+                        djVal = correctFullDual[finiteColLbId[j]];
                     } else if (finiteColUbInd[j]) {
-                        djVal = dualBestSolution[finiteColUbId[j]] + lambda * unbddRay[finiteColUbId[j]];
+                        djVal = correctFullDual[finiteColUbId[j]];
                     }
-                    //FIXME: use a tolerance here
-                    if (djVal > 0) {
+                    if (djVal > etol) {
                         posDj->modifyCoefficient(i, j, djVal, false);
-                    } else if (djVal < 0) {
+                    } else if (djVal < -etol) {
                         negDj->modifyCoefficient(i, j, djVal, false);
                     }
                 }
@@ -491,6 +623,8 @@ int main(int argc, char* argv[])
       double *rowLb = origMibsModel.getOrigRowLb();
       double *rowUb = origMibsModel.getOrigRowUb();
 
+      //FIXME: Make "z >= LBF" con. in master prob. robust to account for upperObjSense
+      //    i.e., fix the "UBF + infty" or "UBF - infty" variation
       double upperObjSense = origMibsModel.BlisPar()->entry(BlisParams::objSense);
       double *upperObjCoef = origMibsModel.getObjCoef();
       double lowerObjSense = origMibsModel.getLowerObjSense();
@@ -537,13 +671,15 @@ int main(int argc, char* argv[])
 
       /** Initial setup for the bilevel subproblem as an MILP **/
       //Various arrays and matrices for the problem setup
+      //NOTE: subproblemRowNum may be only lowerRowNum depending on level2Infeasibility
       int subproblemColNum = lowerColNum, subproblemRowNum = lowerRowNum + 1;
       CoinPackedMatrix subproblemMat(rowCoefMatrixByCol);
       subproblemMat.deleteRows(upperRowNum, upperRowInd);
       subproblemMat.deleteCols(upperColNum, upperColInd);
-      //One more row for objective-bound type constraint
       int *subproblemLowerColInd = new int[subproblemColNum];
       CoinIotaN(subproblemLowerColInd, subproblemColNum, 0);
+      //Indicator for adding one more row for objective-bound type constraint
+      bool addRowInd = false;
 
       //Matrix of lower level row coeffs for upper level cols (A^2 x)
       CoinPackedMatrix lowerMatOfUpperCols(rowCoefMatrixByCol);
@@ -634,7 +770,7 @@ int main(int argc, char* argv[])
       //FIXME: set # of threads appropriately later (as a part of argc/argv?)!
       int masterMaxThreads = 1;
       double *masterBestSolution;
-      double masterObjVal;
+      double masterObjVal, optObjVal = 0;
       double *masterBestSolutionUpperCols = new double[upperColNum];
 
       //Copying original matrix at first and then deleting second level rows & cols
@@ -684,8 +820,12 @@ int main(int argc, char* argv[])
       delete solver;
       memcpy(masterBestSolutionUpperCols, masterBestSolution, sizeof(double)*upperColNum);
       delete [] masterBestSolution;
+      //Evaluating first level part of original MIBLP objective value
+      for (i = 0; i < upperColNum; i++) {
+          optObjVal += masterObjCoef[i]*masterBestSolutionUpperCols[i];
+      }
 
-      // Adding a column to master problem representing bilevel VF approx. value
+      //Adding a column to master problem representing bilevel VF approx. value
       masterColNum += 1;
       masterColLbVec.resize(masterColNum, -infinity);
       masterColUbVec.resize(masterColNum, +infinity);
@@ -702,7 +842,7 @@ int main(int argc, char* argv[])
       /** Initial setup for second level problem **/
       bool level2Infeasible = false;
       double *level2BestSolution = new double[lowerColNum];
-      double level2ObjVal;
+      double level2ObjVal, level2IntObjVal;
       double *level2IntBestSolution = new double[lowerIntColNum];
       memset(level2IntBestSolution, 0, sizeof(double)*lowerIntColNum);
       CoinPackedMatrix level2Mat(rowCoefMatrixByCol);
@@ -780,7 +920,7 @@ int main(int argc, char* argv[])
       //Misc declarations
       bool termFlag = false;
       int iterCounter = 0;
-      double bilevelVFExactValue, bigM = 1e+7;
+      double bilevelVFExactValue = infinity, bigM = 1e+7;
 
       /*** while loop for decomposition algorithm ***/
       while (!termFlag) {
@@ -816,6 +956,12 @@ int main(int argc, char* argv[])
               if (!level2Infeasible) {
                   //If second level feasible, solve the continuous restriction
                   //    for the known level2IntBestSolution
+
+                  //Finding product of integer best solution and corresponding obj. vector
+                  level2IntObjVal = 0;
+                  for (i = 0; i < lowerIntColNum; i++) {
+                      level2IntObjVal += level2IntBestSolution[i]*lowerObjCoef[lowerIntColInd[i]];
+                  }
 
                   //Finding product of integer best solution and integer matrix
                   intRestMat.times(level2IntBestSolution, level2IntColRowActivity);
@@ -858,22 +1004,20 @@ int main(int argc, char* argv[])
                   }
 
                   /* Updating subproblem data with new info. from continuous restriction */
-                  if (!iterCounter) {
+                  if (!addRowInd) {
                       subproblemMat.appendRow(subproblemColNum, subproblemLowerColInd, lowerObjCoef);
+                      addRowInd = true;
                   }
                   if (lowerObjSense == 1) {
                       subproblemRowLb[lowerRowNum] = -infinity;
-                      subproblemRowUb[lowerRowNum] = contRestObjVal;
+                      subproblemRowUb[lowerRowNum] = contRestObjVal + level2IntObjVal;
                   } else {
-                      subproblemRowLb[lowerRowNum] = contRestObjVal;
+                      subproblemRowLb[lowerRowNum] = contRestObjVal + level2IntObjVal;
                       subproblemRowUb[lowerRowNum] = infinity;
                   }
-                  subproblemRhs[lowerRowNum] = contRestObjVal;
+                  subproblemRhs[lowerRowNum] = contRestObjVal + level2IntObjVal;
               } else {
                   contRestObjVal = infinity;
-//                  throw CoinError("Second level problem is infeasible for the given first level solution",
-//                          "Main",
-//                          "MibSMain");
               }
 
 
@@ -884,7 +1028,6 @@ int main(int argc, char* argv[])
                       subproblemColLb, subproblemColUb, subproblemColType,
                       &subproblemMat, subproblemRowLb, subproblemRowUb,
                       &subproblemObjVal, subproblemBestSolution);
-              bilevelVFExactValue = subproblemObjVal;
 
 
               /** Getting dual information to the subproblem **/
@@ -897,11 +1040,16 @@ int main(int argc, char* argv[])
 
               /* Check bilevel feasibility */
               if (!subproblemInfeasible) {
+                  bilevelVFExactValue = subproblemObjVal;
                   double level2ObjValForSubproblemSol = 0;
                   for (i = 0; i < lowerColNum; i++) {
-                      leve2ObjValForSubproblemSol += subproblemBestSolution[i]*lowerObjCoef[i];
+                      level2ObjValForSubproblemSol += subproblemBestSolution[i]*lowerObjCoef[i];
                   }
                   assert(fabs(level2ObjValForSubproblemSol - level2ObjVal) <= etol);
+                  //Updating original MIBLP objective value with its second level part
+                  for (i = 0; i < lowerColNum; i++) {
+                      optObjVal += subproblemObjCoef[i]*subproblemBestSolution[i];
+                  }
               }
           }
 
@@ -916,26 +1064,29 @@ int main(int argc, char* argv[])
           /** Generating Benders' cuts and adding them to the master problem **/
           if (!termFlag) {
               /* Finding various dual information products */
-              //Separating leafDualByRow into two parts
+              //Partitioning leafDualByRow into two parts (original rows & extra row)
               CoinPackedMatrix leafDualToOrigRows(*leafDualByRow);
-              int delColNum = 1, minorDim = leafDualToOrigRows.getMinorDim();
-              int *delColInd = new int[delColNum];
-              delColInd[0] = subproblemRowNum - 1;
-              if ((subproblemRowNum - 1) < minorDim) {
-                  leafDualToOrigRows.deleteCols(delColNum, delColInd);
-              }
-              CoinPackedMatrix copyLeafDualMat(*leafDualByRow);
-              copyLeafDualMat.reverseOrdering();
-              int majorDim = copyLeafDualMat.getMajorDim();
               double *fullDualOfExtraRow = new double[leafNodeNum];
               memset(fullDualOfExtraRow, 0, sizeof(double)*leafNodeNum);
-              if ((subproblemRowNum - 1) < majorDim) {
-                  CoinShallowPackedVector leafDualOfExtraRow = copyLeafDualMat.getVector(subproblemRowNum - 1);
-                  int leafDualOfExtraRowNum = leafDualOfExtraRow.getNumElements();
-                  const int *leafDualOfExtraRowInd = leafDualOfExtraRow.getIndices();
-                  const double *leafDualOfExtraRowVal = leafDualOfExtraRow.getElements();
-                  for (i = 0; i < leafDualOfExtraRowNum; i++) {
-                      fullDualOfExtraRow[leafDualOfExtraRowInd[i]] = leafDualOfExtraRowVal[i];
+              if (!level2Infeasible) {
+                  int delColNum = 1, minorDim = leafDualToOrigRows.getMinorDim();
+                  int *delColInd = new int[delColNum];
+                  delColInd[0] = subproblemRowNum - 1;
+                  if ((subproblemRowNum - 1) < minorDim) {
+                      leafDualToOrigRows.deleteCols(delColNum, delColInd);
+                  }
+
+                  CoinPackedMatrix copyLeafDualMat(*leafDualByRow);
+                  copyLeafDualMat.reverseOrdering();
+                  int majorDim = copyLeafDualMat.getMajorDim();
+                  if ((subproblemRowNum - 1) < majorDim) {
+                      CoinShallowPackedVector leafDualOfExtraRow = copyLeafDualMat.getVector(subproblemRowNum - 1);
+                      int leafDualOfExtraRowNum = leafDualOfExtraRow.getNumElements();
+                      const int *leafDualOfExtraRowInd = leafDualOfExtraRow.getIndices();
+                      const double *leafDualOfExtraRowVal = leafDualOfExtraRow.getElements();
+                      for (i = 0; i < leafDualOfExtraRowNum; i++) {
+                          fullDualOfExtraRow[leafDualOfExtraRowInd[i]] = leafDualOfExtraRowVal[i];
+                      }
                   }
               }
 
@@ -947,6 +1098,9 @@ int main(int argc, char* argv[])
               int allDualNnz = leafDualToOrigRows.getNumElements();
               const int *singleDualInd;
               const double *singleDualVal;
+              //For building full dual
+              //NOTE: Actual size will be 'subproblemRowNum-1' if level2 is infeasible
+              double *singleDual = new double[subproblemRowNum];
 
               //Products of (column LBs and positive reduced costs (leafPosDjByRow))
               //    and (column UBs and negative reduced costs (leafNegDjByRow))
@@ -967,25 +1121,21 @@ int main(int argc, char* argv[])
               const double *negDjElements;
 
               for (i = 0; i < leafNodeNum; i++) {
+                  product1[i] = new double[upperColNum];
+                  memset(product1[i], 0, sizeof(double)*upperColNum);
                   //if nonzero dual entries exist, find the product
                   if (allDualNnz && (i < majorDimDual)) {
-                      product1[i] = new double[upperColNum];
-                      memset(product1[i], 0, sizeof(double)*upperColNum);
                       singleDualRow = leafDualToOrigRows.getVector(i);
                       singleDualNnz = singleDualRow.getNumElements();
                       singleDualInd = singleDualRow.getIndices();
                       singleDualVal = singleDualRow.getElements();
                       //Building a full vector from nonzeroes
-                      double *singleDual = new double[subproblemRowNum - 1];
-                      memset(singleDual, 0, sizeof(double)*(subproblemRowNum - 1));
+                      memset(singleDual, 0, sizeof(double)*(subproblemRowNum));
                       for (j = 0; j < singleDualNnz; j++) {
                           singleDual[singleDualInd[j]] = singleDualVal[j];
                       }
                       //Product
                       lowerMatOfUpperCols.transposeTimes(singleDual, product1[i]);
-                  } else {
-                      product1[i] = new double[upperColNum];
-                      memset(product1[i], 0, sizeof(double)*upperColNum);
                   }
 
                   //i-th leaf node's positive and negative reduced costs
@@ -1035,48 +1185,57 @@ int main(int argc, char* argv[])
                   }
               }
 
-              //Product of constraint matrix (A^2) and dual of continuous restriction
-              double *product2 = new double[upperColNum];
-              memset(product2, 0, sizeof(double)*upperColNum);
-              lowerMatOfUpperCols.transposeTimes(contRestDualSolution, product2);
-
-              //Product of dual of continuous restriction and lower level's 
-              //    row activity of integer restriction
-              double product3 = 0;
-              for (i = 0; i < lowerRowNum; i++) {
-                  product3 += contRestDualSolution[i]*level2IntColRowActivity[i];
-              }
-
-              //Product of cont. rest. basis inverse and constraint matrix A^2
-              double **product4 = new double*[lowerRowNum];
-              for (i = 0; i < lowerRowNum; i++) {
-                  product4[i] = new double[upperColNum];
-                  memset(product4[i], 0, sizeof(double)*upperColNum);
-                  lowerMatOfUpperCols.transposeTimes(contRestBasisInverseRow[i], product4[i]);
-              }
-
-              //Product of cont. rest. basis inverse and lower level's row
-              //    activity of integer restriction
-              double *product5 = new double[lowerRowNum];
-              for (i = 0; i < lowerRowNum; i++) {
-                  product5[i] = 0;
-                  for (j = 0; j < lowerRowNum; j++) {
-                      product5[i] += contRestBasisInverseRow[i][j]*
-                          (level2IntColRowActivity[j] - lowerRowRhs[j]);
-                  }
-              }
-
-              //Product of dual of cont. rest. and lowerRowRhs
-              double product6 = 0;
-              for (i = 0; i < lowerRowNum; i++) {
-                  product6 += contRestDualSolution[i]*lowerRowRhs[i];
-              }
-
-
               //Product of leafDualToOrigRows and lowerRowRhs
               double *product7 = new double[leafNodeNum];
               memset(product7, 0, sizeof(double)*leafNodeNum);
               leafDualToOrigRows.times(lowerRowRhs, product7);
+
+              //Declare remaining products but calculate them only if required
+              //Product of constraint matrix (A^2) and dual of continuous restriction
+              double *product2 = new double[upperColNum];
+              //Product of dual of continuous restriction and lower level's
+              //    row activity of integer restriction
+              double product3 = 0;
+              //Product of cont. rest. basis inverse and constraint matrix A^2
+              double **product4 = new double*[lowerRowNum];
+              //Product of cont. rest. basis inverse and lower level's row
+              //    activity of integer restriction
+              double *product5 = new double[lowerRowNum];
+              //Product of dual of cont. rest. and lowerRowRhs
+              double product6 = 0;
+              if (!level2Infeasible) {
+                  //Product of constraint matrix (A^2) and dual of continuous restriction
+                  memset(product2, 0, sizeof(double)*upperColNum);
+                  lowerMatOfUpperCols.transposeTimes(contRestDualSolution, product2);
+
+                  //Product of dual of continuous restriction and lower level's
+                  //    row activity of integer restriction
+                  for (i = 0; i < lowerRowNum; i++) {
+                      product3 += contRestDualSolution[i]*level2IntColRowActivity[i];
+                  }
+
+                  //Product of cont. rest. basis inverse and constraint matrix A^2
+                  for (i = 0; i < lowerRowNum; i++) {
+                      product4[i] = new double[upperColNum];
+                      memset(product4[i], 0, sizeof(double)*upperColNum);
+                      lowerMatOfUpperCols.transposeTimes(contRestBasisInverseRow[i], product4[i]);
+                  }
+
+                  //Product of cont. rest. basis inverse and lower level's row
+                  //    activity of integer restriction
+                  for (i = 0; i < lowerRowNum; i++) {
+                      product5[i] = 0;
+                      for (j = 0; j < lowerRowNum; j++) {
+                          product5[i] += contRestBasisInverseRow[i][j]*
+                              (level2IntColRowActivity[j] - lowerRowRhs[j]);
+                      }
+                  }
+
+                  //Product of dual of cont. rest. and lowerRowRhs
+                  for (i = 0; i < lowerRowNum; i++) {
+                      product6 += contRestDualSolution[i]*lowerRowRhs[i];
+                  }
+              }
               //END finding products
 
               /* Updating master problem's matrices and vectors/arrays */
@@ -1084,61 +1243,98 @@ int main(int argc, char* argv[])
               feasibleLeafNodeNum = leafNodeNum;
               feasibleLeafNodeInd = new int[feasibleLeafNodeNum];
               CoinIotaN(feasibleLeafNodeInd, feasibleLeafNodeNum, 0);
-              // Note: new # of cols = old # of cols + (upperColNum + 2)*feasibleLeafNodeNum + 1
-              // Note: new # of rows = old # of rows + (4 * upperColNum + 3)*feasibleLeafNodeNum + 2*lowerRowNum + 1
+              //FIXME: Technically, follwing if-else conditions should depend on presence
+              //    of continuous variables in 2nd level prob, i.e., if UBF is generated or not!
+              /* NOTE: if level2Infeasible = false:
+                         new # of cols = old # of cols + feasibleLeafNodeNum + 1
+                         new # of rows = old # of rows + 2*feasibleLeafNodeNum + 1 + 2*lowerRowNum
+                       else if level2Infeasible = true:
+                         new # of cols = old # of cols + feasibleLeafNodeNum
+                         new # of rows = old # of rows + 2*feasibleLeafNodeNum + 1 */
 
-              //Objective coefficient vector
-              masterObjCoefVec.resize((masterColNum + (upperColNum + 2)*feasibleLeafNodeNum + 1), 0);
+              //FIXME: Shall we remove following if-check because else-check is covered WLOG?
+              if (!level2Infeasible) {
+                  //Objective coefficient vector
+                  masterObjCoefVec.resize((masterColNum + feasibleLeafNodeNum + 1), 0);
+
+                  //Column bounds
+                  masterColLbVec.resize((masterColNum + feasibleLeafNodeNum + 1), 0);
+                  masterColUbVec.resize((masterColNum + feasibleLeafNodeNum + 1), 1);
+
+                  //Column types
+                  masterColTypeVec.resize((masterColNum + feasibleLeafNodeNum + 1), 'B');
+
+                  //Row bounds
+                  masterRowLbVec.resize((masterRowNum + feasibleLeafNodeNum), -infinity);
+                  for (i = 0; i < feasibleLeafNodeNum; i++) {
+                      masterRowLbVec.resize((masterRowNum + feasibleLeafNodeNum + (i+1)),
+                              (product7[feasibleLeafNodeInd[i]] +
+                               lbPosDjProduct[feasibleLeafNodeInd[i]] +
+                               ubNegDjProduct[feasibleLeafNodeInd[i]] +
+                               fullDualOfExtraRow[feasibleLeafNodeInd[i]]*(product6 - product3 + level2IntObjVal) -
+                               bigM));
+                  }
+                  masterRowLbVec.resize((masterRowNum + 2*feasibleLeafNodeNum + 1), 1);
+                  for (i = 0; i < lowerRowNum; i++) {
+                      masterRowLbVec.resize((masterRowNum + 2*feasibleLeafNodeNum + 1 + (i+1)), product5[i]);
+                  }
+                  masterRowLbVec.resize((masterRowNum + 2*feasibleLeafNodeNum + 1 + 2*lowerRowNum), -infinity);
+
+                  for (i = 0; i < feasibleLeafNodeNum; i++) {
+                      masterRowUbVec.resize((masterRowNum + (i+1)),
+                              (product7[feasibleLeafNodeInd[i]] +
+                               lbPosDjProduct[feasibleLeafNodeInd[i]] +
+                               ubNegDjProduct[feasibleLeafNodeInd[i]] +
+                               fullDualOfExtraRow[feasibleLeafNodeInd[i]]*(product6 - product3 + level2IntObjVal)));
+                  }
+                  masterRowUbVec.resize((masterRowNum + 2*feasibleLeafNodeNum), infinity);
+                  masterRowUbVec.resize((masterRowNum + 2*feasibleLeafNodeNum + 1), 1);
+                  masterRowUbVec.resize((masterRowNum + 2*feasibleLeafNodeNum + 1 + lowerRowNum), infinity);
+                  for (i = 0; i < lowerRowNum; i++) {
+                      masterRowUbVec.resize((masterRowNum + 2*feasibleLeafNodeNum + 1 + lowerRowNum + (i+1)), bigM + product5[i]);
+                  }
+              } else {
+                  //Objective coefficient vector
+                  masterObjCoefVec.resize((masterColNum + feasibleLeafNodeNum), 0);
+
+                  //Column bounds
+                  masterColLbVec.resize((masterColNum + feasibleLeafNodeNum), 0);
+                  masterColUbVec.resize((masterColNum + feasibleLeafNodeNum), 1);
+
+                  //Column types
+                  masterColTypeVec.resize((masterColNum + feasibleLeafNodeNum), 'B');
+
+                  //Row bounds
+                  masterRowLbVec.resize((masterRowNum + feasibleLeafNodeNum), -infinity);
+                  for (i = 0; i < feasibleLeafNodeNum; i++) {
+                      masterRowLbVec.resize((masterRowNum + feasibleLeafNodeNum + (i+1)),
+                              (product7[feasibleLeafNodeInd[i]] +
+                               lbPosDjProduct[feasibleLeafNodeInd[i]] +
+                               ubNegDjProduct[feasibleLeafNodeInd[i]] -
+                               bigM));
+                  }
+                  masterRowLbVec.resize((masterRowNum + 2*feasibleLeafNodeNum + 1), 1);
+
+                  for (i = 0; i < feasibleLeafNodeNum; i++) {
+                      masterRowUbVec.resize((masterRowNum + (i+1)),
+                              (product7[feasibleLeafNodeInd[i]] +
+                               lbPosDjProduct[feasibleLeafNodeInd[i]] +
+                               ubNegDjProduct[feasibleLeafNodeInd[i]]));
+                  }
+                  masterRowUbVec.resize((masterRowNum + 2*feasibleLeafNodeNum), infinity);
+                  masterRowUbVec.resize((masterRowNum + 2*feasibleLeafNodeNum + 1), 1);
+              }
+
               masterObjCoef = &masterObjCoefVec[0];
-
-              //Column bounds
-              masterColLbVec.resize((masterColNum + upperColNum*feasibleLeafNodeNum), -infinity);
-              masterColLbVec.resize((masterColNum + (upperColNum + 2)*feasibleLeafNodeNum + 1), 0);
-              masterColUbVec.resize((masterColNum + upperColNum*feasibleLeafNodeNum), infinity);
-              masterColUbVec.resize((masterColNum + (upperColNum + 2)*feasibleLeafNodeNum + 1), 1);
               masterColLb = &masterColLbVec[0];
               masterColUb = &masterColUbVec[0];
-
-              //Column types
-              masterColTypeVec.resize((masterColNum + upperColNum*feasibleLeafNodeNum), 'C');
-              masterColTypeVec.resize((masterColNum + (upperColNum + 2)*feasibleLeafNodeNum + 1), 'B');
               masterColType = &masterColTypeVec[0];
-
-              //Row bounds
-              masterRowLbVec.resize((masterRowNum + upperColNum*feasibleLeafNodeNum), -infinity);
-              masterRowLbVec.resize((masterRowNum + 2*upperColNum*feasibleLeafNodeNum), 0);
-              masterRowLbVec.resize((masterRowNum + 3*upperColNum*feasibleLeafNodeNum), -infinity);
-              for (i = 0; i < upperColNum; i++) {
-                  masterRowLbVec.resize((masterRowNum + 3*upperColNum*feasibleLeafNodeNum + (i+1)*feasibleLeafNodeNum),
-                          -origColUb[i]);
-              }
-              masterRowLbVec.resize((masterRowNum + (4*upperColNum + 2)*feasibleLeafNodeNum), -infinity);
-              masterRowLbVec.resize((masterRowNum + (4*upperColNum + 3)*feasibleLeafNodeNum), -1);
-              for (i = 0; i < lowerRowNum; i++) {
-                  masterRowLbVec.resize((masterRowNum + (4*upperColNum + 3)*feasibleLeafNodeNum + (i+1)), product5[i]);
-              }
-              masterRowLbVec.resize((masterRowNum + (4*upperColNum + 3)*feasibleLeafNodeNum + 2*lowerRowNum), -infinity);
-              masterRowLbVec.resize((masterRowNum + (4*upperColNum + 3)*feasibleLeafNodeNum + 2*lowerRowNum + 1), 0);
-
-              masterRowUbVec.resize((masterRowNum + upperColNum*feasibleLeafNodeNum), 0);
-              masterRowUbVec.resize((masterRowNum + 2*upperColNum*feasibleLeafNodeNum), infinity);
-              for (i = 0; i < upperColNum; i++) {
-                  masterRowUbVec.resize((masterRowNum + 2*upperColNum*feasibleLeafNodeNum + (i+1)*feasibleLeafNodeNum),
-                          -origColLb[i]);
-              }
-              masterRowUbVec.resize((masterRowNum + 4*upperColNum*feasibleLeafNodeNum), infinity);
-              masterRowUbVec.resize((masterRowNum + (4*upperColNum + 2)*feasibleLeafNodeNum), 0);
-              masterRowUbVec.resize((masterRowNum + (4*upperColNum + 3)*feasibleLeafNodeNum + lowerRowNum), infinity);
-              for (i = 0; i < lowerRowNum; i++) {
-                  masterRowUbVec.resize((masterRowNum + (4*upperColNum + 3)*feasibleLeafNodeNum + lowerRowNum + (i+1)), bigM + product5[i]);
-              }
-              masterRowUbVec.resize((masterRowNum + (4*upperColNum + 3)*feasibleLeafNodeNum + 2*lowerRowNum + 1), infinity);
               masterRowLb = &masterRowLbVec[0];
               masterRowUb = &masterRowUbVec[0];
 
               //Row coefficient matrix
               //First, appending new columns to existing matrix
-              int newColNum = (upperColNum + 2)*feasibleLeafNodeNum + 1;
+              int newColNum = (level2Infeasible ? (feasibleLeafNodeNum) : (feasibleLeafNodeNum + 1));
               CoinBigIndex *newColStarts = new CoinBigIndex[newColNum + 1];
               //FIXME: Is following memset required, or does declaration take care of it?
               memset(newColStarts, 0, sizeof(CoinBigIndex)*(newColNum + 1));
@@ -1147,100 +1343,89 @@ int main(int argc, char* argv[])
               assert(errorNum == 0);
 
               //Now, appending new rows to the matrix
-              for (i = 0; i < upperColNum; i++) {
-                  for (j = 0; j < feasibleLeafNodeNum; j++) {
+              //FIXME: Simplify further by removing common rows outside if-else condition.
+              if (!level2Infeasible) {
+                  for (i = 0; i < feasibleLeafNodeNum; i++) {
                       CoinPackedVector row;
-                      row.insert(masterColNum + i*feasibleLeafNodeNum + j, 1);
-                      row.insert(masterColNum + (upperColNum + 1)*feasibleLeafNodeNum + j, -origColUb[i]);
+                      for (j = 0; j < upperColNum; j++) {
+                          row.insert(j, (product1[feasibleLeafNodeInd[i]][j] +
+                                      fullDualOfExtraRow[feasibleLeafNodeInd[i]]*product2[j]));
+                      }
+                      row.insert(upperColNum, 1);
+                      row.insert((masterColNum + feasibleLeafNodeNum), -bigM*fullDualOfExtraRow[feasibleLeafNodeInd[i]]);
                       masterMat.appendRow(row);
                   }
-              }
-              for (i = 0; i < upperColNum; i++) {
-                  for (j = 0; j < feasibleLeafNodeNum; j++) {
+                  for (i = 0; i < feasibleLeafNodeNum; i++) {
                       CoinPackedVector row;
-                      row.insert(masterColNum + i*feasibleLeafNodeNum + j, 1);
-                      row.insert(masterColNum + (upperColNum + 1)*feasibleLeafNodeNum + j, -origColLb[i]);
+                      for (j = 0; j < upperColNum; j++) {
+                          row.insert(j, (product1[feasibleLeafNodeInd[i]][j] +
+                                      fullDualOfExtraRow[feasibleLeafNodeInd[i]]*product2[j]));
+                      }
+                      row.insert(upperColNum, 1);
+                      row.insert((masterColNum + i), -bigM);
+                      row.insert((masterColNum + feasibleLeafNodeNum), -bigM*fullDualOfExtraRow[feasibleLeafNodeInd[i]]);
                       masterMat.appendRow(row);
                   }
-              }
-              for (i = 0; i < upperColNum; i++) {
-                  for (j = 0; j < feasibleLeafNodeNum; j++) {
+                  CoinPackedVector oneMoreRow;
+                  for (i = 0; i < feasibleLeafNodeNum; i++) {
+                      oneMoreRow.insert((masterColNum + i), 1);
+                  }
+                  masterMat.appendRow(oneMoreRow);
+                  for (i = 0; i < lowerRowNum; i++) {
                       CoinPackedVector row;
-                      row.insert(i, -1);
-                      row.insert(masterColNum + i*feasibleLeafNodeNum + j, 1);
-                      row.insert(masterColNum + (upperColNum + 1)*feasibleLeafNodeNum + j, -origColLb[i]);
+                      for (j = 0; j < upperColNum; j++) {
+                          row.insert(j, -product4[i][j]);
+                      }
+                      row.insert(masterColNum + feasibleLeafNodeNum, bigM);
                       masterMat.appendRow(row);
                   }
-              }
-              for (i = 0; i < upperColNum; i++) {
-                  for (j = 0; j < feasibleLeafNodeNum; j++) {
+                  for (i = 0; i < lowerRowNum; i++) {
                       CoinPackedVector row;
-                      row.insert(i, -1);
-                      row.insert(masterColNum + i*feasibleLeafNodeNum + j, 1);
-                      row.insert(masterColNum + (upperColNum + 1)*feasibleLeafNodeNum + j, -origColUb[i]);
+                      for (j = 0; j < upperColNum; j++) {
+                          row.insert(j, -product4[i][j]);
+                      }
+                      row.insert(masterColNum + feasibleLeafNodeNum, bigM);
                       masterMat.appendRow(row);
                   }
-              }
-              for (i = 0; i < feasibleLeafNodeNum; i++) {
-                  CoinPackedVector row;
-                  row.insert(masterColNum + upperColNum*feasibleLeafNodeNum + i, 1);
-                  row.insert(masterColNum + (upperColNum + 2)*feasibleLeafNodeNum, -1);
-                  masterMat.appendRow(row);
-              }
-              for (i = 0; i < feasibleLeafNodeNum; i++) {
-                  CoinPackedVector row;
-                  row.insert(masterColNum + upperColNum*feasibleLeafNodeNum + i, 1);
-                  row.insert(masterColNum + (upperColNum + 1)*feasibleLeafNodeNum + i, -1);
-                  masterMat.appendRow(row);
-              }
-              for (i = 0; i < feasibleLeafNodeNum; i++) {
-                  CoinPackedVector row;
-                  row.insert(masterColNum + upperColNum*feasibleLeafNodeNum + i, 1);
-                  row.insert(masterColNum + (upperColNum + 1)*feasibleLeafNodeNum + i, -1);
-                  row.insert(masterColNum + (upperColNum + 2)*feasibleLeafNodeNum, -1);
-                  masterMat.appendRow(row);
-              }
-              for (i = 0; i < lowerRowNum; i++) {
-                  CoinPackedVector row;
-                  for (j = 0; j < upperColNum; j++) {
-                      row.insert(j, -product4[i][j]);
+              } else {
+                  for (i = 0; i < feasibleLeafNodeNum; i++) {
+                      CoinPackedVector row;
+                      for (j = 0; j < upperColNum; j++) {
+                          row.insert(j, product1[feasibleLeafNodeInd[i]][j]);
+                      }
+                      row.insert(upperColNum, 1);
+                      masterMat.appendRow(row);
                   }
-                  row.insert(masterColNum + (upperColNum + 2)*feasibleLeafNodeNum, bigM);
-                  masterMat.appendRow(row);
-              }
-              for (i = 0; i < lowerRowNum; i++) {
-                  CoinPackedVector row;
-                  for (j = 0; j < upperColNum; j++) {
-                      row.insert(j, -product4[i][j]);
+                  for (i = 0; i < feasibleLeafNodeNum; i++) {
+                      CoinPackedVector row;
+                      for (j = 0; j < upperColNum; j++) {
+                          row.insert(j, product1[feasibleLeafNodeInd[i]][j]);
+                      }
+                      row.insert(upperColNum, 1);
+                      row.insert((masterColNum + i), -bigM);
+                      masterMat.appendRow(row);
                   }
-                  row.insert(masterColNum + (upperColNum + 2)*feasibleLeafNodeNum, bigM);
-                  masterMat.appendRow(row);
-              }
-              CoinPackedVector oneLastRow;
-              oneLastRow.insert(upperColNum, 1);
-              for (i = 0; i < upperColNum; i++) {
-                  for (j = 0; j < feasibleLeafNodeNum; j++) {
-                      oneLastRow.insert(masterColNum + i*feasibleLeafNodeNum + j,
-                              (product1[feasibleLeafNodeInd[j]][i] + 
-                                  fullDualOfExtraRow[feasibleLeafNodeInd[j]]*product2[i]));
+                  CoinPackedVector oneMoreRow;
+                  for (i = 0; i < feasibleLeafNodeNum; i++) {
+                      oneMoreRow.insert((masterColNum + i), 1);
                   }
+                  masterMat.appendRow(oneMoreRow);
               }
-              for (i = 0; i < feasibleLeafNodeNum; i++) {
-                  oneLastRow.insert(masterColNum + upperColNum*feasibleLeafNodeNum + i,
-                          -bigM*fullDualOfExtraRow[feasibleLeafNodeInd[i]]);
-              }
-              for (i = 0; i < feasibleLeafNodeNum; i++) {
-                  oneLastRow.insert(masterColNum + (upperColNum + 1)*feasibleLeafNodeNum + i,
-                          -(lbPosDjProduct[feasibleLeafNodeInd[i]] + ubNegDjProduct[feasibleLeafNodeInd[i]] - 
-                              fullDualOfExtraRow[feasibleLeafNodeInd[i]]*product3 +
-                              fullDualOfExtraRow[feasibleLeafNodeInd[i]]*product6 +
-                              product7[feasibleLeafNodeInd[i]]));
-              }
-              masterMat.appendRow(oneLastRow);
 
               //Number of rows and columns
-              masterColNum += (upperColNum + 2)*feasibleLeafNodeNum + 1;
-              masterRowNum += (4*upperColNum + 3)*feasibleLeafNodeNum + 2*lowerRowNum + 1;
+              if (!level2Infeasible) {
+                  masterColNum += feasibleLeafNodeNum + 1;
+                  masterRowNum += 2*feasibleLeafNodeNum + 1 + 2*lowerRowNum;
+              } else {
+                  masterColNum += feasibleLeafNodeNum;
+                  masterRowNum += 2*feasibleLeafNodeNum + 1;
+              }
+
+              std::cout << std::endl;
+              std::cout << "Iter-" << iterCounter << std::endl;
+              std::cout << "masterInfeas = " << masterInfeasible << std::endl;
+              std::cout << "VF Exact = " << bilevelVFExactValue << ", VF Approx = " << bilevelVFApproxValue << std::endl;
+              std::cout << std::endl;
 
 
               /** Setting and solving the master problem **/
@@ -1254,16 +1439,16 @@ int main(int argc, char* argv[])
               delete solver;
               memcpy(masterBestSolutionUpperCols, masterBestSolution, sizeof(double)*upperColNum);
 
-              std::cout << std::endl;
-              std::cout << "Iter-" << iterCounter << std::endl;
-              std::cout << "masterInfeas = " << masterInfeasible << std::endl;
-              std::cout << "VF Exact = " << bilevelVFExactValue << ", VF Approx = " << bilevelVFApproxValue << std::endl;
-              std::cout << std::endl;
 
               /** Getting solution to master problem **/
               if (!masterInfeasible) {
                   //FIXME: unbounded case? any other invalid case?
                   bilevelVFApproxValue = masterBestSolution[upperColNum];
+                  //Evaluating first level part of original MIBLP objective function
+                  optObjVal = 0;
+                  for (i = 0; i < upperColNum; i++) {
+                      optObjVal += masterObjCoef[i]*masterBestSolutionUpperCols[i];
+                  }
               }
 
               delete [] masterBestSolution;
@@ -1275,7 +1460,11 @@ int main(int argc, char* argv[])
               std::cout << "Iter-" << iterCounter << std::endl;
               std::cout << "masterInfeas = " << masterInfeasible << std::endl;
               std::cout << "VF Exact = " << bilevelVFExactValue << ", VF Approx = " << bilevelVFApproxValue << std::endl;
-              std::cout << "Optimal Objective Value = " << masterObjVal << std::endl;
+              if (!masterInfeasible) {
+                  std::cout << "Optimal Objective Value = " << optObjVal << std::endl;
+              } else {
+                  std::cout << "Master problem found infeasible!" << std::endl;
+              }
               std::cout << std::endl;
           }
           iterCounter++;
