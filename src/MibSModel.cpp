@@ -116,6 +116,7 @@ MibSModel::initialize()
   isUpperCoeffInt_ = true;
   isLowerCoeffInt_ = true;
   allUpperBin_ = true;
+  allLinkingBin_ = true;
   allLowerBin_ = true;
   positiveA1_ = true;
   positiveA2_ = true;

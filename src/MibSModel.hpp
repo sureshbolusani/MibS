@@ -360,6 +360,10 @@ public:
     /** Get structural row number **/
     int getStructRowNum() {return structRowNum_;}
 
+    //Suresh
+    /** Get indicator to all binary linking variables **/
+    bool getAllLinkingBinInd() {return allLinkingBin_;};
+
     /** Get bjective sense of lower-level problem **/
     double getLowerObjSense() {return lowerObjSense_;}
 
