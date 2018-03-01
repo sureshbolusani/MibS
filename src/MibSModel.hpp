@@ -361,8 +361,12 @@ public:
     int getStructRowNum() {return structRowNum_;}
 
     //Suresh
+    /** Get size of first-level variables in second-level constraints **/
+    int getSizeFixedInd() {return sizeFixedInd_;}
+
+    //Suresh
     /** Get indicator to all binary linking variables **/
-    bool getAllLinkingBinInd() {return allLinkingBin_;};
+    bool getAllLinkingBinInd() {return allLinkingBin_;}
 
     /** Get bjective sense of lower-level problem **/
     double getLowerObjSense() {return lowerObjSense_;}
