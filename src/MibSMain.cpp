@@ -1072,75 +1072,6 @@ int main(int argc, char* argv[])
       memcpy(linkingColId, origMibsModel.getFixedInd(),
               sizeof(int)*(upperColNum + lowerColNum));
       int linkingColNum = origMibsModel.getSizeFixedInd();
-      /*
-      int tolProbColNum = upperColNum + 2;
-      int tolProbRowNum = 4;
-      double *tolProbObjCoef = new double[tolProbColNum];
-      CoinZeroN(tolProbObjCoef, tolProbColNum);
-      tolProbObjCoef[upperColNum] = 1.0;
-      double tolProbObjSense = 1.0;
-      double *tolProbColLb = new double[tolProbColNum];
-      double *tolProbColUb = new double[tolProbColNum];
-      CoinFillN(tolProbColLb, upperColNum, -1.0);
-      tolProbColLb[upperColNum] = 0;
-      tolProbColLb[upperColNum + 1] = 0;
-      CoinFillN(tolProbColUb, upperColNum, 1.0);
-      tolProbColUb[upperColNum] = infinity;
-      tolProbColUb[upperColNum + 1] = 1;
-      char *tolProbColType = new char[tolProbColNum];
-      CoinFillN(tolProbColType, upperColNum, 'I');
-      tolProbColType[upperColNum] = 'C';
-      tolProbColType[upperColNum + 1] = 'B';
-      double *tolProbRowLb = new double[tolProbRowNum];
-      double *tolProbRowUb = new double[tolProbRowNum];
-      CoinFillN(tolProbRowLb, tolProbRowNum, -infinity);
-      CoinFillN(tolProbRowUb, tolProbRowNum, infinity);
-      tolProbRowLb[0] = 1;
-      tolProbRowLb[2] = 0;
-      tolProbRowLb[3] = 0;
-      tolProbRowUb[1] = 1;
-      double tolProbObjVal;
-      double *tolProbBestSolution = new double[tolProbColNum];
-      //Creating triplets to initialize tolProbMat
-      //Declaring maximum memory
-      int *rowIndex = new int[tolProbColNum * tolProbRowNum];
-      int *colIndex = new int[tolProbColNum * tolProbRowNum];
-      double *entryVal = new double[tolProbColNum * tolProbRowNum];
-      int totalElems = 0;
-      for (i = 0; i < upperColNum; i++) {
-          if (linkingColId[i]) {
-              rowIndex[totalElems] = 0;
-              colIndex[totalElems] = i;
-              entryVal[totalElems++] = 1;
-
-              rowIndex[totalElems] = 1;
-              colIndex[totalElems] = i;
-              entryVal[totalElems++] = 1;
-          }
-      }
-      //Adding two big-M values
-      rowIndex[totalElems] = 0;
-      colIndex[totalElems] = upperColNum + 1;
-      entryVal[totalElems++] = 1 + 1;
-      rowIndex[totalElems] = 1;
-      colIndex[totalElems] = upperColNum + 1;
-      entryVal[totalElems++] = 1 + 1;
-      //Adding one coeff. each for third and fourth rows
-      rowIndex[totalElems] = 2;
-      colIndex[totalElems] = upperColNum;
-      entryVal[totalElems++] = 1;
-      rowIndex[totalElems] = 3;
-      colIndex[totalElems] = upperColNum;
-      entryVal[totalElems++] = 1;
-      //Now, creating the matrix
-      CoinPackedMatrix *tolProbMat = new CoinPackedMatrix(true, rowIndex, colIndex, entryVal, totalElems);
-      bool tolProbInfeasible = false;
-      //Parameter for identifying which MILP solver needs to be used
-      //FIXME: Have this as a user input parameter!
-      std::string tolProbSolver = "CPLEX";
-      //FIXME: set # of threads appropriately later (as a part of argc/argv?)!
-      int tolProbMaxThreads = 1;
-      */
 
       //Misc declarations
       bool termFlag = false, timeUp = false;
@@ -1616,12 +1547,12 @@ int main(int argc, char* argv[])
               numBinColsForDomainRest = 0;
               //FIXME: combine the code of all for loops of the following kind
               if (!level2Infeasible) {
-                  //Finding "tol" as well as # of binary variables for domain rest.
                   CoinZeroN(tol, 2*lowerRowNum);
                   for (i = 0; i < lowerRowNum; i++) {
                       int ind = contRestBasisIndices[i];
                       if (ind < lowerContColNum) {
                           if (lowerContColFiniteLbId[ind]) {
+                              //Finding "tol"
                               for (j = 0; j < upperColNum; j++) {
                                   double currCoef = fabs(product4[i][j]);
                                   if (currCoef > etol) {
@@ -1636,31 +1567,13 @@ int main(int argc, char* argv[])
                                       tol[numBinColsForDomainRest] = currCoef;
                                   }
                               }
-                              /*
-                              //Finding tol by solving an optimization problem
-                              for (j = 0; j < upperColNum; j++) {
-                                  tolProbMat->modifyCoefficient(2, j, product4[i][j], false);
-                                  tolProbMat->modifyCoefficient(3, j, -product4[i][j], false);
-                              }
-//                              tolProbRowLb[2] = -product5[i] - contRestColLb[ind];
-//                              tolProbRowLb[3] = product5[i] + contRestColLb[ind];
-                              solver = getSolver(tolProbSolver, tolProbMaxThreads, false);
-                              tolProbInfeasible = solve(solver,
-                                      tolProbColNum, tolProbObjCoef, tolProbObjSense,
-                                      tolProbColLb, tolProbColUb, tolProbColType,
-                                      tolProbMat, tolProbRowLb, tolProbRowUb,
-                                      &tolProbObjVal, tolProbBestSolution);
-                              assert(solver->isProvenOptimal());
-                              delete solver;
-                              //NOTE: 2 is a random divisor
-                              tol[numBinColsForDomainRest] = fabs(tolProbObjVal)/2;
-                              */
 
                               //Counting # of binary variables for domain rest.
                               numBinColsForDomainRest++;
                           }
                           if (lowerContColFiniteUbId[ind]) {
                               for (j = 0; j < upperColNum; j++) {
+                                  //Finding "tol"
                                   double currCoef = fabs(product4[i][j]);
                                   if (currCoef > etol) {
                                       tol[numBinColsForDomainRest] = currCoef;
@@ -1674,30 +1587,13 @@ int main(int argc, char* argv[])
                                       tol[numBinColsForDomainRest] = currCoef;
                                   }
                               }
-                              /*
-                              //Finding tol by solving an optimization problem
-                              for (j = 0; j < upperColNum; j++) {
-                                  tolProbMat->modifyCoefficient(2, j, -product4[i][j], false);
-                                  tolProbMat->modifyCoefficient(3, j, product4[i][j], false);
-                              }
-//                              tolProbRowLb[2] = product5[i] + contRestColUb[ind];
-//                              tolProbRowLb[3] = -product5[i] - contRestColUb[ind];
-                              solver = getSolver(tolProbSolver, tolProbMaxThreads, false);
-                              tolProbInfeasible = solve(solver,
-                                      tolProbColNum, tolProbObjCoef, tolProbObjSense,
-                                      tolProbColLb, tolProbColUb, tolProbColType,
-                                      tolProbMat, tolProbRowLb, tolProbRowUb,
-                                      &tolProbObjVal, tolProbBestSolution);
-                              assert(solver->isProvenOptimal());
-                              //NOTE: 2 is a random divisor
-                              tol[numBinColsForDomainRest] = fabs(tolProbObjVal)/2;
-                              */
 
                               //Counting # of binary variables for domain rest.
                               numBinColsForDomainRest++;
                           }
                       } else {
                           for (j = 0; j < upperColNum; j++) {
+                              //Finding "tol"
                               double currCoef = fabs(product4[i][j]);
                               if (currCoef > etol) {
                                   tol[numBinColsForDomainRest] = currCoef;
@@ -1711,25 +1607,6 @@ int main(int argc, char* argv[])
                                   tol[numBinColsForDomainRest] = currCoef;
                               }
                           }
-                          /*
-                          //Finding tol by solving an optimization problem
-                          for (j = 0; j < upperColNum; j++) {
-                          tolProbMat->modifyCoefficient(2, j, product4[i][j], false);
-                          tolProbMat->modifyCoefficient(3, j, -product4[i][j], false);
-                          }
-                          //                          tolProbRowLb[2] = -product5[i];
-                          //                          tolProbRowLb[3] = product5[i];
-                          solver = getSolver(tolProbSolver, tolProbMaxThreads, false);
-                          tolProbInfeasible = solve(solver,
-                          tolProbColNum, tolProbObjCoef, tolProbObjSense,
-                          tolProbColLb, tolProbColUb, tolProbColType,
-                          tolProbMat, tolProbRowLb, tolProbRowUb,
-                          &tolProbObjVal, tolProbBestSolution);
-                          assert(solver->isProvenOptimal());
-                          delete solver;
-                          //NOTE: 2 is a random divisor
-                          tol[numBinColsForDomainRest] = fabs(tolProbObjVal)/2;
-                           */
 
                           //Counting # of binary variables for domain rest.
                           numBinColsForDomainRest++;
@@ -2029,7 +1906,7 @@ int main(int argc, char* argv[])
                       &masterObjVal, masterBestSolution);
               delete solver;
 
-              //This is a hack to overcome a flaw in master problem reformulation
+              //This checks the infinite loop condition which should never happen
               if (masterBestSolution[upperColNum] == bilevelVFApproxValue) {
                   for (i = 0; i < upperColNum; i++) {
                       if (fabs(masterBestSolutionUpperCols[i] - masterBestSolution[i]) >= etol) {
@@ -2041,130 +1918,6 @@ int main(int argc, char* argv[])
                       termFlag = true;
                       std::cout << "Algoirthm exited because we are about to enter an infinite loop!\n" << std::endl;
                   }
-                  /*
-                  if (i == upperColNum) {
-                      //Adding few more cols and rows for {v_i <= |x_Li - x_Li^k|}
-                      //    New # of columns = 2*linkingColNum
-                      //    New # of rows = 2*linkingColNum + 2
-                      assert(!level2Infeasible);
-
-                      //Objective coefficient vector
-                      masterObjCoefVec.resize((masterColNum + 2*linkingColNum), 0);
-
-                      //Column bounds
-                      masterColLbVec.resize((masterColNum + 2*linkingColNum), 0);
-                      masterColUbVec.resize((masterColNum + 2*linkingColNum), 1);
-
-                      //Column types
-                      masterColTypeVec.resize((masterColNum + 2*linkingColNum), 'B');
-
-                      masterObjCoef = &masterObjCoefVec[0];
-                      masterColLb = &masterColLbVec[0];
-                      masterColUb = &masterColUbVec[0];
-                      masterColType = &masterColTypeVec[0];
-
-                      //Row bounds
-                      int counterTemp = 0;
-                      for (i = 0; i < (upperColNum + lowerColNum); i++) {
-                          if (linkingColId[i]) {
-                              assert(i < upperColNum);
-                              masterRowLbVec.resize(masterRowNum + counterTemp + 1,
-                                      masterBestSolution[i]);
-                              counterTemp++;
-                          }
-                      }
-                      assert(counterTemp == linkingColNum);
-                      masterRowLbVec.resize((masterRowNum + 2*linkingColNum), -infinity);
-                      masterRowLbVec.resize((masterRowNum + 2*linkingColNum + 1), 0);
-                      masterRowLbVec.resize((masterRowNum + 2*linkingColNum + 2), -infinity);
-
-                      masterRowUbVec.resize((masterRowNum + linkingColNum), infinity);
-                      counterTemp = 0;
-                      for (i = 0; i < (upperColNum + lowerColNum); i++) {
-                          if (linkingColId[i]) {
-                              masterRowUbVec.resize(masterRowNum + linkingColNum + counterTemp + 1,
-                                      (masterBestSolution[i] + 2*(masterColUb[i] - masterColLb[i])));
-                              counterTemp++;
-                          }
-                      }
-                      assert(counterTemp == linkingColNum);
-                      masterRowUbVec.resize((masterRowNum + 2*linkingColNum + 1), infinity);
-                      masterRowUbVec.resize((masterRowNum + 2*linkingColNum + 2), 0);
-
-                      masterRowLb = &masterRowLbVec[0];
-                      masterRowUb = &masterRowUbVec[0];
-
-                      //Row coefficient matrix
-                      //First, appending new columns to existing matrix
-                      int newColNum = 2*linkingColNum;
-                      CoinBigIndex *newColStarts = new CoinBigIndex[newColNum + 1];
-                      //FIXME: Is following memset required, or does declaration take care of it?
-                      CoinZeroN(newColStarts, newColNum + 1);
-                      int errorNum = masterMat.appendCols(newColNum, newColStarts,
-                              NULL, NULL, masterRowNum);
-                      assert(errorNum == 0);
-
-                      //Row LHS
-                      //First set of constraints
-                      counterTemp = 0;
-                      for (i = 0; i < (upperColNum + lowerColNum); i++) {
-                          if (linkingColId[i]) {
-                              CoinPackedVector newRow;
-                              newRow.insert(i, 1);
-                              newRow.insert((masterColNum + counterTemp), -1);
-                              newRow.insert((masterColNum + linkingColNum + counterTemp),
-                                      2*(masterColUb[i] - masterColLb[i]));
-                              masterMat.appendRow(newRow);
-                              counterTemp++;
-                          }
-                      }
-                      //Second set of constraints
-                      counterTemp = 0;
-                      for (i = 0; i < (upperColNum + lowerColNum); i++) {
-                          if (linkingColId[i]) {
-                              CoinPackedVector newRow;
-                              newRow.insert(i, 1);
-                              newRow.insert((masterColNum + counterTemp), 1);
-                              newRow.insert((masterColNum + linkingColNum + counterTemp),
-                                      2*(masterColUb[i] - masterColLb[i]));
-                              masterMat.appendRow(newRow);
-                              counterTemp++;
-                          }
-                      }
-                      CoinPackedVector anotherRow;
-                      anotherRow.insert((masterColNum - numBinColsForDomainRest - 1), linkingColNum);
-                      for (i = 0; i < linkingColNum; i++) {
-                          anotherRow.insert((masterColNum + i), -1);
-                      }
-                      masterMat.appendRow(anotherRow);
-                      CoinPackedVector oneLastRow;
-                      oneLastRow.insert((masterColNum - numBinColsForDomainRest - 1), 1);
-                      for (i = 0; i < linkingColNum; i++) {
-                          oneLastRow.insert((masterColNum + i), -1);
-                      }
-                      masterMat.appendRow(oneLastRow);
-
-                      //Updating column and row counts
-                      masterColNum += 2*linkingColNum;
-                      masterRowNum += 2*linkingColNum + 2;
-
-                      //Solve the updated master problem
-                      delete [] masterBestSolution;
-                      masterBestSolution = new double[masterColNum];
-                      solver = getSolver(masterProblemSolver, masterMaxThreads, false);
-                      masterInfeasible = solve(solver,
-                              masterColNum, masterObjCoef, upperObjSense,
-                              masterColLb, masterColUb, masterColType,
-                              &masterMat, masterRowLb, masterRowUb,
-                              &masterObjVal, masterBestSolution);
-                      delete solver;
-
-                      std::cout.precision(15);
-                      for (i = 0; i < masterColNum; i++) {
-                          std::cout << "    x[" << i << "] = " << std::fixed << masterBestSolutionUpperCols[i] << std::endl;
-                      }
-                  }
-                  */
               }
 
               memcpy(masterBestSolutionUpperCols, masterBestSolution, sizeof(double)*upperColNum);
