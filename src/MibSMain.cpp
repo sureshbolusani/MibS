@@ -577,6 +577,8 @@ void getDualData(OsiSolverInterface *solver, double boundOnBigM,
                         }
                     }
                 }
+
+                delete dualMatByCol;
             }
         }
 
@@ -585,6 +587,21 @@ void getDualData(OsiSolverInterface *solver, double boundOnBigM,
                 "getDualData",
                 "MibSMain");
 #endif
+
+        delete [] reverseId;
+        delete [] finiteColUbId;
+        delete [] finiteColLbId;
+        delete [] finiteColUbInd;
+        delete [] finiteColLbInd;
+        delete [] tempColUb;
+        delete [] tempColLb;
+        delete [] dualColType;
+        delete [] correctFullDual;
+        delete [] unbddRay;
+        delete [] dualBestSolution;
+        delete [] dualColUb;
+        delete [] dualColLb;
+        delete [] dualObjCoef;
     }
 
 #else
@@ -1313,6 +1330,7 @@ int main(int argc, char* argv[])
                           fullDualOfExtraRow[leafDualOfExtraRowInd[i]] = leafDualOfExtraRowVal[i];
                       }
                   }
+                  delete [] delColInd;
               }
 
               //FIXME: remove feasibleLeafNodeNum and feasibleLeafNodeInd later!
@@ -1934,10 +1952,39 @@ int main(int argc, char* argv[])
                   }
               }
 
-              delete [] masterBestSolution;
+              for (i = 0; i < leafNodeNum; i++) {
+                  delete [] product1[i];
+//                  delete [] leafUbVal[i];
+//                  delete [] leafLbVal[i];
+//                  delete [] leafUbInd[i];
+//                  delete [] leafLbInd[i];
+              }
+//              delete [] leafUbVal;
+//              delete [] leafLbVal;
+//              delete [] leafUbInd;
+//              delete [] leafLbInd;
+//              delete [] leafUbCnt;
+//              delete [] leafLbCnt;
+//              delete [] leafFeasibilityStatus;
               delete [] newColStarts;
+              delete [] product5;
+              delete [] product2;
+              delete [] product7;
               delete [] ubNegDjProduct;
               delete [] lbPosDjProduct;
+              delete [] singleDual;
+              delete [] product1;
+              delete [] bigMForLbf;
+              delete [] feasibleLeafNodeInd;
+              delete [] fullDualOfExtraRow;
+              if (!level2Infeasible) {
+                  for (i = 0; i < lowerRowNum; i++) {
+                      delete [] contRestBasisInverseRow[i];
+                      delete [] product4[i];
+                  }
+              }
+              delete [] product4;
+              delete [] masterBestSolution;
           } else {
               std::cout << std::endl;
               std::cout << "Iter-" << iterCounter << std::endl;
@@ -1971,10 +2018,37 @@ int main(int argc, char* argv[])
           iterCounter++;
       }
 
+//      delete [] lowerObjCoef;
+//      delete [] lowerColInd;
+//      delete [] bigMForLbf;
+//      delete [] feasibleLeafNodeInd;
+      delete [] minValForDomainRest;
+      delete [] maxValForDomainRest;
+      delete [] linkingColId;
+      delete [] tol;
+      delete [] level2IntColRowActivity;
+      delete [] contRestBasisIndices;
+      delete [] contRestBasisInverseRow;
+      delete [] contRestDualSolution;
+      delete [] contRestBestSolution;
+      delete [] contRestRowUb;
+      delete [] contRestRowLb;
+      delete [] contRestColType;
+      delete [] contRestColUb;
+      delete [] contRestColLb;
+      delete [] contRestObjCoef;
+      delete [] level2RowUb;
+      delete [] level2RowLb;
+      delete [] level2IntBestSolution;
+      delete [] level2BestSolution;
+      delete [] masterBestSolutionUpperCols;
+      delete leafNegDjByRow;
+      delete leafPosDjByRow;
+      delete leafDualByRow;
       delete [] tempSubproblemColUb;
       delete [] tempSubproblemColLb;
-      delete [] masterBestSolutionUpperCols;
-      delete [] subproblemLowerColInd;
+      delete [] lowerRowRhs;
+      delete [] subproblemOrigRhs;
       delete [] subproblemRowSense;
       delete [] subproblemUpperColRowActivity;
       delete [] subproblemRhs;
@@ -1984,10 +2058,14 @@ int main(int argc, char* argv[])
       delete [] subproblemColType;
       delete [] subproblemColUb;
       delete [] subproblemColLb;
-//      delete [] lowerObjCoef;
+      delete [] subproblemLowerColInd;
+      delete [] lowerContColUb;
+      delete [] lowerContColLb;
+      delete [] lowerContObjCoef;
+      delete [] lowerContColFiniteUbId;
+      delete [] lowerContColFiniteLbId;
+      delete [] lowerContColInd;
       delete [] lowerIntColInd;
-//      delete [] lowerColInd;
-      delete [] feasibleLeafNodeInd;
     }
     catch(CoinError& er) {
 	std::cerr << "ERROR:" << er.message() << std::endl
