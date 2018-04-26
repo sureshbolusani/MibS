@@ -1867,6 +1867,10 @@ int main(int argc, char* argv[])
                               //Note: 10 is a random multiplier
                               double bigMForDomainRest = 10*fabs(-product5[i] - minValForDomainRest[i] -
                                       contRestBasisInverseRowLcm[i]*contRestColLb[ind]);
+                              if (bigMForDomainRest <= etol) {
+                                  // bigM = 0; 10 is a random number!
+                                  bigMForDomainRest = 10;
+                              }
                               masterRowUbVec.resize((masterRowNum + feasibleLeafNodeNum + 1 + numBinColsForDomainRest +
                                           (counterTemp+1)), (bigMForDomainRest + product5[i] +
                                               contRestBasisInverseRowLcm[i]*contRestColLb[ind] - 1));
@@ -1875,6 +1879,10 @@ int main(int argc, char* argv[])
                           if (lowerContColFiniteUbId[ind]) {
                               double bigMForDomainRest = 10*fabs(product5[i] + maxValForDomainRest[i] +
                                       contRestBasisInverseRowLcm[i]*contRestColUb[ind]);
+                              if (bigMForDomainRest <= etol) {
+                                  // bigM = 0; 10 is a random number!
+                                  bigMForDomainRest = 10;
+                              }
                               masterRowUbVec.resize((masterRowNum + feasibleLeafNodeNum + 1 + numBinColsForDomainRest +
                                           (counterTemp+1)), (bigMForDomainRest - product5[i] -
                                               contRestBasisInverseRowLcm[i]*contRestColUb[ind] - 1));
@@ -1882,6 +1890,10 @@ int main(int argc, char* argv[])
                           }
                       } else {
                           double bigMForDomainRest = 10*fabs(-product5[i] - minValForDomainRest[i]);
+                          if (bigMForDomainRest <= etol) {
+                              // bigM = 0; 10 is a random number!
+                              bigMForDomainRest = 10;
+                          }
                           masterRowUbVec.resize((masterRowNum + feasibleLeafNodeNum + 1 + numBinColsForDomainRest +
                                       (counterTemp+1)), (bigMForDomainRest + product5[i] - 1));
                           counterTemp++;
@@ -1961,8 +1973,11 @@ int main(int argc, char* argv[])
                               //Note: 10 is a random multiplier
                               if (bigMForDomainRest > etol) {
                                   bigMForDomainRest = -10*bigMForDomainRest;
-                              } else {
+                              } else if (bigMForDomainRest < etol) {
                                   bigMForDomainRest = 10*bigMForDomainRest;
+                              } else {
+                                  // bigM = 0; -10 is a random number!
+                                  bigMForDomainRest = -10;
                               }
                               CoinPackedVector row;
                               for (j = 0; j < upperColNum; j++) {
@@ -1977,8 +1992,11 @@ int main(int argc, char* argv[])
                                   contRestBasisInverseRowLcm[i]*contRestColUb[ind];
                               if (bigMForDomainRest > etol) {
                                   bigMForDomainRest = -10*bigMForDomainRest;
-                              } else {
+                              } else if (bigMForDomainRest < etol) {
                                   bigMForDomainRest = 10*bigMForDomainRest;
+                              } else {
+                                  // bigM = 0; -10 is a random number!
+                                  bigMForDomainRest = -10;
                               }
                               CoinPackedVector row;
                               for (j = 0; j < upperColNum; j++) {
@@ -1992,8 +2010,11 @@ int main(int argc, char* argv[])
                           double bigMForDomainRest = -product5[i] - maxValForDomainRest[i];
                           if (bigMForDomainRest > etol) {
                               bigMForDomainRest = -10*bigMForDomainRest;
-                          } else {
+                          } else if (bigMForDomainRest < etol) {
                               bigMForDomainRest = 10*bigMForDomainRest;
+                          } else {
+                              // bigM = 0; -10 is a random number!
+                              bigMForDomainRest = -10;
                           }
                           CoinPackedVector row;
                           for (j = 0; j < upperColNum; j++) {
@@ -2013,6 +2034,10 @@ int main(int argc, char* argv[])
                               //Note: 10 is a random multiplier
                               double bigMForDomainRest = 10*fabs(-product5[i] - minValForDomainRest[i] -
                                       contRestBasisInverseRowLcm[i]*contRestColLb[ind]);
+                              if (bigMForDomainRest <= etol) {
+                                  // bigM = 0; 10 is a random number!
+                                  bigMForDomainRest = 10;
+                              }
                               CoinPackedVector row;
                               for (j = 0; j < upperColNum; j++) {
                                   row.insert(j, -product4[i][j]);
@@ -2024,6 +2049,10 @@ int main(int argc, char* argv[])
                           if (lowerContColFiniteUbId[ind]) {
                               double bigMForDomainRest = 10*fabs(product5[i] + maxValForDomainRest[i] +
                                       contRestBasisInverseRowLcm[i]*contRestColUb[ind]);
+                              if (bigMForDomainRest <= etol) {
+                                  // bigM = 0; 10 is a random number!
+                                  bigMForDomainRest = 10;
+                              }
                               CoinPackedVector row;
                               for (j = 0; j < upperColNum; j++) {
                                   row.insert(j, product4[i][j]);
@@ -2034,6 +2063,10 @@ int main(int argc, char* argv[])
                           }
                       } else {
                           double bigMForDomainRest = 10*fabs(-product5[i] - minValForDomainRest[i]);
+                          if (bigMForDomainRest <= etol) {
+                              // bigM = 0; 10 is a random number!
+                              bigMForDomainRest = 10;
+                          }
                           CoinPackedVector row;
                           for (j = 0; j < upperColNum; j++) {
                               row.insert(j, -product4[i][j]);
