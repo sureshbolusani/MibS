@@ -259,13 +259,6 @@ void getDualData(OsiSolverInterface *solver, double boundOnBigM,
         if (solver->isProvenOptimal()) {
             bigM = objVal;
         }
-        //Update bigM further based on known bound
-        /*
-        //bound (=subproblemObjVal) can't be used this way (I think)
-        if (bigM >= bound + etol) {
-            bigM = bound;
-        }
-        */
         //Update bigM further based on max of subproblem's objective function
         if (bigM >= boundOnBigM + etol) {
             bigM = boundOnBigM;
@@ -433,7 +426,7 @@ void getDualData(OsiSolverInterface *solver, double boundOnBigM,
 
                 if (!isInfeasible && !isOptimal) {
                     //Find appropriate multiplier for unbounded ray
-                    //FIXME: Use isInfeasible as well as improve following etol later!
+                    //FIXME: Improve following etol later!
                     double lambda = 0, objCoefRayProd = 0;
                     int nzDual = 0, nzPosDj = 0, nzNegDj = 0;
                     int maxColIndDualNz = -1, maxColIndPosDjNz = -1, maxColIndNegDjNz = -1;
@@ -464,163 +457,163 @@ void getDualData(OsiSolverInterface *solver, double boundOnBigM,
                         }
                     }
 
-                    if (correctFullDual[numRows-1] >= -etol) {
-                        //Dual value corresponding to 2nd level optimality constraint
-                        //  is zero ==> we do not use this node for generating an LBF.
-                        //Change feasibility status to OFF
-                        feasibilityStatus[0][i] = 0;
-                    } else {
-                        //Update dual matrix
-                        int dualMajorDim = dual->getMajorDim();
-                        int dualMinorDim = dual->getMinorDim();
-                        if ((maxColIndDualNz >= 0) && !dualMajorDim && !dualMinorDim) {
-                            //Dual matrix is currently empty
-                            int newRowNum = i + 1;
-                            CoinBigIndex *newRowStarts = new CoinBigIndex[newRowNum + 1];
-                            CoinZeroN(newRowStarts, newRowNum + 1);
-                            int errorNum = dual->appendRows(newRowNum, newRowStarts,
-                                    NULL, NULL, maxColIndDualNz + 1);
-                            delete [] newRowStarts;
-                            assert(errorNum == 0);
-                            dualMajorDim = dual->getMajorDim();
-                            dualMinorDim = dual->getMinorDim();
-                        }
-                        if ((maxColIndDualNz + 1) > dualMinorDim) {
-                            //Minor dimension is not large enough! Append extra columns of all zeroes.
-                            int newColNum = maxColIndDualNz + 1 - dualMinorDim;
-                            CoinBigIndex *newColStarts = new CoinBigIndex[newColNum + 1];
-                            CoinZeroN(newColStarts, newColNum + 1);
-                            int errorNum = dual->appendCols(newColNum, newColStarts,
-                                    NULL, NULL, dualMajorDim);
-                            delete [] newColStarts;
-                            assert(errorNum == 0);
-                            dualMinorDim = maxColIndDualNz + 1;
-                        }
-                        if ((maxColIndDualNz >= 0) && (i >= dualMajorDim)) {
-                            //Major dimension is not large enough! Append extra rows of all zeroes.
-                            int newRowNum = i + 1 - dualMajorDim;
-                            CoinBigIndex *newRowStarts = new CoinBigIndex[newRowNum + 1];
-                            CoinZeroN(newRowStarts, newRowNum + 1);
-                            int errorNum = dual->appendRows(newRowNum, newRowStarts,
-                                    NULL, NULL, dualMinorDim);
-                            delete [] newRowStarts;
-                            assert(errorNum == 0);
-                        }
-                        //Now, both the minor and major dimensions are large enough
-                        for (j = 0; j < numRows; j++) {
-                            dual->modifyCoefficient(i, j, correctFullDual[j], false);
-                        }
-
-                        //Expand posDj matrix if required
-                        int posDjMajorDim = posDj->getMajorDim();
-                        int posDjMinorDim = posDj->getMinorDim();
-                        if ((maxColIndPosDjNz >= 0) && !posDjMajorDim && !posDjMinorDim) {
-                            //posDj matrix is currently empty
-                            int newRowNum = i + 1;
-                            CoinBigIndex *newRowStarts = new CoinBigIndex[newRowNum + 1];
-                            CoinZeroN(newRowStarts, newRowNum + 1);
-                            int errorNum = posDj->appendRows(newRowNum, newRowStarts,
-                                    NULL, NULL, maxColIndPosDjNz + 1);
-                            delete [] newRowStarts;
-                            assert(errorNum == 0);
-                            posDjMajorDim = posDj->getMajorDim();
-                            posDjMinorDim = posDj->getMinorDim();
-                        }
-                        if ((maxColIndPosDjNz + 1) > posDjMinorDim) {
-                            //Minor dimension is not large enough! Append extra columns of all zeroes.
-                            int newColNum = maxColIndPosDjNz + 1 - posDjMinorDim;
-                            CoinBigIndex *newColStarts = new CoinBigIndex[newColNum + 1];
-                            CoinZeroN(newColStarts, newColNum + 1);
-                            int errorNum = posDj->appendCols(newColNum, newColStarts,
-                                    NULL, NULL, posDjMajorDim);
-                            delete [] newColStarts;
-                            assert(errorNum == 0);
-                            posDjMinorDim = maxColIndPosDjNz + 1;
-                        }
-                        if ((maxColIndPosDjNz >= 0) && (i >= posDjMajorDim)) {
-                            //Major dimension is not large enough! Append extra rows of all zeroes.
-                            int newRowNum = i + 1 - posDjMajorDim;
-                            CoinBigIndex *newRowStarts = new CoinBigIndex[newRowNum + 1];
-                            CoinZeroN(newRowStarts, newRowNum + 1);
-                            int errorNum = posDj->appendRows(newRowNum, newRowStarts,
-                                    NULL, NULL, posDjMinorDim);
-                            delete [] newRowStarts;
-                            assert(errorNum == 0);
-                        }
-
-                        //Expand negDj matrix if required
-                        int negDjMajorDim = negDj->getMajorDim();
-                        int negDjMinorDim = negDj->getMinorDim();
-                        if ((maxColIndNegDjNz >= 0) && !negDjMajorDim && !negDjMinorDim) {
-                            //negDj matrix is currently empty
-                            int newRowNum = i + 1;
-                            CoinBigIndex *newRowStarts = new CoinBigIndex[newRowNum + 1];
-                            CoinZeroN(newRowStarts, newRowNum + 1);
-                            int errorNum = negDj->appendRows(newRowNum, newRowStarts,
-                                    NULL, NULL, maxColIndNegDjNz + 1);
-                            delete [] newRowStarts;
-                            assert(errorNum == 0);
-                            negDjMajorDim = negDj->getMajorDim();
-                            negDjMinorDim = negDj->getMinorDim();
-                        }
-                        if ((maxColIndNegDjNz + 1) > negDjMinorDim) {
-                            //Minor dimension is not large enough! Append extra columns of all zeroes.
-                            int newColNum = maxColIndNegDjNz + 1 - negDjMinorDim;
-                            CoinBigIndex *newColStarts = new CoinBigIndex[newColNum + 1];
-                            CoinZeroN(newColStarts, newColNum + 1);
-                            int errorNum = negDj->appendCols(newColNum, newColStarts,
-                                    NULL, NULL, negDjMajorDim);
-                            delete [] newColStarts;
-                            assert(errorNum == 0);
-                            negDjMinorDim = maxColIndNegDjNz + 1;
-                        }
-                        if ((maxColIndNegDjNz >= 0) && (i >= negDjMajorDim)) {
-                            //Major dimension is not large enough! Append extra rows of all zeroes.
-                            int newRowNum = i + 1 - negDjMajorDim;
-                            CoinBigIndex *newRowStarts = new CoinBigIndex[newRowNum + 1];
-                            CoinZeroN(newRowStarts, newRowNum + 1);
-                            int errorNum = negDj->appendRows(newRowNum, newRowStarts,
-                                    NULL, NULL, negDjMinorDim);
-                            delete [] newRowStarts;
-                            assert(errorNum == 0);
-                        }
-
-                        //Now, both posDj and negDj matrices have large enough dimensions
-                        double djVal = 0;
-                        for (j = 0; j < numCols; j++) {
-                            if (finiteColLbInd[j] && finiteColUbInd[j]) {
-                                //Check that only one of two values is nonzero
-                                double temp1 = correctFullDual[finiteColLbId[j]];
-                                double temp2 = correctFullDual[finiteColUbId[j]];
-                                assert(!(temp1 && temp2));
-                                if (temp1) {
-                                    djVal = temp1;
-                                } else {
-                                    djVal = temp2;
-                                }
-                            } else if (finiteColLbInd[j]) {
-                                djVal = correctFullDual[finiteColLbId[j]];
-                            } else if (finiteColUbInd[j]) {
-                                djVal = correctFullDual[finiteColUbId[j]];
-                            }
-                            if (djVal > etol) {
-                                posDj->modifyCoefficient(i, j, djVal, false);
-                                if ((i < negDjMajorDim) && (j < negDjMinorDim)) {
-                                    negDj->modifyCoefficient(i, j, 0, false);
-                                }
-                            } else if (djVal < -etol) {
-                                negDj->modifyCoefficient(i, j, djVal, false);
-                                if ((i < posDjMajorDim) && (j < posDjMinorDim)) {
-                                    posDj->modifyCoefficient(i, j, 0, false);
-                                }
-                            }
-                        }
-
-                        delete dualMatByCol;
-
-                        //Change feasibility status to ON
-                        feasibilityStatus[0][i] = 1;
+                    //Update dual matrix
+                    int dualMajorDim = dual->getMajorDim();
+                    int dualMinorDim = dual->getMinorDim();
+                    if ((maxColIndDualNz >= 0) && !dualMajorDim && !dualMinorDim) {
+                        //Dual matrix is currently empty
+                        int newRowNum = i + 1;
+                        CoinBigIndex *newRowStarts = new CoinBigIndex[newRowNum + 1];
+                        CoinZeroN(newRowStarts, newRowNum + 1);
+                        int errorNum = dual->appendRows(newRowNum, newRowStarts,
+                                NULL, NULL, maxColIndDualNz + 1);
+                        delete [] newRowStarts;
+                        assert(errorNum == 0);
+                        dualMajorDim = dual->getMajorDim();
+                        dualMinorDim = dual->getMinorDim();
                     }
+                    if ((maxColIndDualNz + 1) > dualMinorDim) {
+                        //Minor dimension is not large enough! Append extra columns of all zeroes.
+                        int newColNum = maxColIndDualNz + 1 - dualMinorDim;
+                        CoinBigIndex *newColStarts = new CoinBigIndex[newColNum + 1];
+                        CoinZeroN(newColStarts, newColNum + 1);
+                        int errorNum = dual->appendCols(newColNum, newColStarts,
+                                NULL, NULL, dualMajorDim);
+                        delete [] newColStarts;
+                        assert(errorNum == 0);
+                        dualMinorDim = maxColIndDualNz + 1;
+                    }
+                    if ((maxColIndDualNz >= 0) && (i >= dualMajorDim)) {
+                        //Major dimension is not large enough! Append extra rows of all zeroes.
+                        int newRowNum = i + 1 - dualMajorDim;
+                        CoinBigIndex *newRowStarts = new CoinBigIndex[newRowNum + 1];
+                        CoinZeroN(newRowStarts, newRowNum + 1);
+                        int errorNum = dual->appendRows(newRowNum, newRowStarts,
+                                NULL, NULL, dualMinorDim);
+                        delete [] newRowStarts;
+                        assert(errorNum == 0);
+                    }
+                    //Now, both the minor and major dimensions are large enough
+                    for (j = 0; j < numRows; j++) {
+                        dual->modifyCoefficient(i, j, correctFullDual[j], false);
+                    }
+
+                    //Expand posDj matrix if required
+                    int posDjMajorDim = posDj->getMajorDim();
+                    int posDjMinorDim = posDj->getMinorDim();
+                    if ((maxColIndPosDjNz >= 0) && !posDjMajorDim && !posDjMinorDim) {
+                        //posDj matrix is currently empty
+                        int newRowNum = i + 1;
+                        CoinBigIndex *newRowStarts = new CoinBigIndex[newRowNum + 1];
+                        CoinZeroN(newRowStarts, newRowNum + 1);
+                        int errorNum = posDj->appendRows(newRowNum, newRowStarts,
+                                NULL, NULL, maxColIndPosDjNz + 1);
+                        delete [] newRowStarts;
+                        assert(errorNum == 0);
+                        posDjMajorDim = posDj->getMajorDim();
+                        posDjMinorDim = posDj->getMinorDim();
+                    }
+                    if ((maxColIndPosDjNz + 1) > posDjMinorDim) {
+                        //Minor dimension is not large enough! Append extra columns of all zeroes.
+                        int newColNum = maxColIndPosDjNz + 1 - posDjMinorDim;
+                        CoinBigIndex *newColStarts = new CoinBigIndex[newColNum + 1];
+                        CoinZeroN(newColStarts, newColNum + 1);
+                        int errorNum = posDj->appendCols(newColNum, newColStarts,
+                                NULL, NULL, posDjMajorDim);
+                        delete [] newColStarts;
+                        assert(errorNum == 0);
+                        posDjMinorDim = maxColIndPosDjNz + 1;
+                    }
+                    if ((maxColIndPosDjNz >= 0) && (i >= posDjMajorDim)) {
+                        //Major dimension is not large enough! Append extra rows of all zeroes.
+                        int newRowNum = i + 1 - posDjMajorDim;
+                        CoinBigIndex *newRowStarts = new CoinBigIndex[newRowNum + 1];
+                        CoinZeroN(newRowStarts, newRowNum + 1);
+                        int errorNum = posDj->appendRows(newRowNum, newRowStarts,
+                                NULL, NULL, posDjMinorDim);
+                        delete [] newRowStarts;
+                        assert(errorNum == 0);
+                    }
+
+                    //Expand negDj matrix if required
+                    int negDjMajorDim = negDj->getMajorDim();
+                    int negDjMinorDim = negDj->getMinorDim();
+                    if ((maxColIndNegDjNz >= 0) && !negDjMajorDim && !negDjMinorDim) {
+                        //negDj matrix is currently empty
+                        int newRowNum = i + 1;
+                        CoinBigIndex *newRowStarts = new CoinBigIndex[newRowNum + 1];
+                        CoinZeroN(newRowStarts, newRowNum + 1);
+                        int errorNum = negDj->appendRows(newRowNum, newRowStarts,
+                                NULL, NULL, maxColIndNegDjNz + 1);
+                        delete [] newRowStarts;
+                        assert(errorNum == 0);
+                        negDjMajorDim = negDj->getMajorDim();
+                        negDjMinorDim = negDj->getMinorDim();
+                    }
+                    if ((maxColIndNegDjNz + 1) > negDjMinorDim) {
+                        //Minor dimension is not large enough! Append extra columns of all zeroes.
+                        int newColNum = maxColIndNegDjNz + 1 - negDjMinorDim;
+                        CoinBigIndex *newColStarts = new CoinBigIndex[newColNum + 1];
+                        CoinZeroN(newColStarts, newColNum + 1);
+                        int errorNum = negDj->appendCols(newColNum, newColStarts,
+                                NULL, NULL, negDjMajorDim);
+                        delete [] newColStarts;
+                        assert(errorNum == 0);
+                        negDjMinorDim = maxColIndNegDjNz + 1;
+                    }
+                    if ((maxColIndNegDjNz >= 0) && (i >= negDjMajorDim)) {
+                        //Major dimension is not large enough! Append extra rows of all zeroes.
+                        int newRowNum = i + 1 - negDjMajorDim;
+                        CoinBigIndex *newRowStarts = new CoinBigIndex[newRowNum + 1];
+                        CoinZeroN(newRowStarts, newRowNum + 1);
+                        int errorNum = negDj->appendRows(newRowNum, newRowStarts,
+                                NULL, NULL, negDjMinorDim);
+                        delete [] newRowStarts;
+                        assert(errorNum == 0);
+                    }
+
+                    //Now, both posDj and negDj matrices have large enough dimensions
+                    double djVal = 0;
+                    for (j = 0; j < numCols; j++) {
+                        if (finiteColLbInd[j] && finiteColUbInd[j]) {
+                            //Check that only one of two values is nonzero
+                            double temp1 = correctFullDual[finiteColLbId[j]];
+                            double temp2 = correctFullDual[finiteColUbId[j]];
+                            assert(!(temp1 && temp2));
+                            if (temp1) {
+                                djVal = temp1;
+                            } else {
+                                djVal = temp2;
+                            }
+                        } else if (finiteColLbInd[j]) {
+                            djVal = correctFullDual[finiteColLbId[j]];
+                        } else if (finiteColUbInd[j]) {
+                            djVal = correctFullDual[finiteColUbId[j]];
+                        }
+                        if (djVal > etol) {
+                            posDj->modifyCoefficient(i, j, djVal, false);
+                            if ((i < negDjMajorDim) && (j < negDjMinorDim)) {
+                                negDj->modifyCoefficient(i, j, 0, false);
+                            }
+                        } else if (djVal < -etol) {
+                            negDj->modifyCoefficient(i, j, djVal, false);
+                            if ((i < posDjMajorDim) && (j < posDjMinorDim)) {
+                                posDj->modifyCoefficient(i, j, 0, false);
+                            }
+                        } else {
+                            if ((i < negDjMajorDim) && (j < negDjMinorDim)) {
+                                negDj->modifyCoefficient(i, j, 0, false);
+                            }
+                            if ((i < posDjMajorDim) && (j < posDjMinorDim)) {
+                                posDj->modifyCoefficient(i, j, 0, false);
+                            }
+                        }
+                    }
+
+                    delete dualMatByCol;
+
+                    //Change feasibility status to ON
+                    feasibilityStatus[0][i] = 1;
                 } else {
                     //Problem at current node is either 'lp feasible but
                     //  ip infeasible' or 'lp infeasible'
@@ -1640,51 +1633,64 @@ int main(int argc, char* argv[])
                   //bigM for LBF of subproblem
                   singleBigMForLbf = 0;
                   for (i = 0; i < feasibleLeafNodeNum; i++) {
-                      bigMForLbf[feasibleLeafNodeInd[i]] = 0;
-                      double minVal = 0, maxVal = 0;
+                      double bigMForLbf = 0, minVal1 = 0, maxVal1 = 0;
+                      double minVal2 = 0, maxVal2 = 0;
+                      double tempMax, tempMin;
                       for (j = 0; j < upperColNum; j++) {
                           double coef = (product1[feasibleLeafNodeInd[i]][j] +
                                       fullDualOfExtraRow[feasibleLeafNodeInd[i]]*product2[j]);
                           if (coef < -etol) {
-                              minVal += coef*masterColUb[j];
+                              minVal1 += coef*masterColUb[j];
+                              maxVal1 += coef*masterColLb[j];
                           } else if (coef > etol) {
-                              minVal += coef*masterColLb[j];
+                              minVal1 += coef*masterColLb[j];
+                              maxVal1 += coef*masterColUb[j];
                           }
                       }
                       if (fullDualOfExtraRow[feasibleLeafNodeInd[i]] < -etol) {
-                          maxVal = 0;
+                          minVal2 = bigMForUbf*fullDualOfExtraRow[feasibleLeafNodeInd[i]];
+                          maxVal2 = 0;
                       } else if (fullDualOfExtraRow[feasibleLeafNodeInd[i]] > etol) {
-                          maxVal = bigMForUbf*fullDualOfExtraRow[feasibleLeafNodeInd[i]];
+                          minVal2 = 0;
+                          maxVal2 = bigMForUbf*fullDualOfExtraRow[feasibleLeafNodeInd[i]];
                       }
-                      bigMForLbf[feasibleLeafNodeInd[i]] = fabs(product7[feasibleLeafNodeInd[i]] +
+                      bigMForLbf = product7[feasibleLeafNodeInd[i]] +
                                lbPosDjProduct[feasibleLeafNodeInd[i]] +
                                ubNegDjProduct[feasibleLeafNodeInd[i]] +
-                               fullDualOfExtraRow[feasibleLeafNodeInd[i]]*(product6 - product3 + level2IntObjVal)
-                               - minVal + maxVal);
-                      if ((bigMForLbf[feasibleLeafNodeInd[i]] - singleBigMForLbf) > etol) {
-                          singleBigMForLbf = bigMForLbf[feasibleLeafNodeInd[i]];
+                               fullDualOfExtraRow[feasibleLeafNodeInd[i]]*(product6 - product3 + level2IntObjVal);
+                      tempMax = fabs(bigMForLbf - minVal1 + maxVal2);
+                      tempMin = fabs(bigMForLbf - maxVal1 + minVal2);
+                      //Note: 4 is a random multiplier
+                      bigMForLbf = ((tempMax >= tempMin + etol) ? 4*tempMax : 4*tempMin);
+                      if ((bigMForLbf - singleBigMForLbf) > etol) {
+                          singleBigMForLbf = bigMForLbf;
                       }
                   }
               } else {
                   //bigM for LBF of subproblem
                   singleBigMForLbf = 0;
                   for (i = 0; i < feasibleLeafNodeNum; i++) {
-                      bigMForLbf[feasibleLeafNodeInd[i]] = 0;
-                      double minVal = 0;
+                      double bigMForLbf = 0, minVal = 0, maxVal = 0;
+                      double tempMax, tempMin;
                       for (j = 0; j < upperColNum; j++) {
                           double coef = product1[feasibleLeafNodeInd[i]][j];
                           if (coef < -etol) {
                               minVal += coef*masterColUb[j];
+                              maxVal += coef*masterColLb[j];
                           } else if (coef > etol) {
                               minVal += coef*masterColLb[j];
+                              maxVal += coef*masterColUb[j];
                           }
                       }
-                      bigMForLbf[feasibleLeafNodeInd[i]] += fabs(product7[feasibleLeafNodeInd[i]] +
+                      bigMForLbf = product7[feasibleLeafNodeInd[i]] +
                                lbPosDjProduct[feasibleLeafNodeInd[i]] +
-                               ubNegDjProduct[feasibleLeafNodeInd[i]] +
-                               - minVal);
-                      if ((bigMForLbf[feasibleLeafNodeInd[i]] - singleBigMForLbf) > etol) {
-                          singleBigMForLbf = bigMForLbf[feasibleLeafNodeInd[i]];
+                               ubNegDjProduct[feasibleLeafNodeInd[i]];
+                      tempMax = fabs(bigMForLbf - minVal);
+                      tempMin = fabs(bigMForLbf - maxVal);
+                      //Note: 4 is a random multiplier
+                      bigMForLbf = ((tempMax >= tempMin + etol) ? 4*tempMax : 4*tempMin);
+                      if ((bigMForLbf - singleBigMForLbf) > etol) {
+                          singleBigMForLbf = bigMForLbf;
                       }
                   }
               }
