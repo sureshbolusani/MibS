@@ -104,10 +104,6 @@ OsiSolverInterface* getSolver(std::string problemSolver, int maxThreads,
         assert(cpxEnv);
         CPXsetintparam(cpxEnv, CPX_PARAM_SCRIND, CPX_OFF);
         CPXsetintparam(cpxEnv, CPX_PARAM_THREADS, maxThreads);
-        //set various tolerances manually to have better control over them
-        CPXsetdblparam(cpxEnv, CPX_PARAM_EPINT, 1e-05);
-        CPXsetdblparam(cpxEnv, CPX_PARAM_EPOPT, 1e-06);
-        CPXsetdblparam(cpxEnv, CPX_PARAM_EPRHS, 1e-06);
 #else
         throw CoinError("CPLEX chosen as solver but it has not been enabled",
                 "getSolver",
@@ -173,10 +169,9 @@ bool solve(OsiSolverInterface *solver,
     }
     solver->setObjSense(objSense);
 
-    bool ind = true;
+    bool ind = false;
     if (ind) {
         solver->writeLp("problemAtHand");
-//        solver->writeMps("problemAtHand");
     }
 
     // Solving the problem
@@ -621,9 +616,6 @@ void getDualData(OsiSolverInterface *solver, double boundOnBigM,
                     feasibilityStatus[0][i] = 0;
                 }
             } else {
-                //FIXME: Is it necessary to check if dual corresponding to
-                //  2nd level objective constraint is < 0?
-                //  Or is it fine if it is = 0?
                 //Leaf node is feasible; change the feasibility status to ON
                 feasibilityStatus[0][i] = 1;
             }
@@ -1132,56 +1124,19 @@ int main(int argc, char* argv[])
       int contRestMaxThreads = 1;
 
 
-      /** Initial setup for finding tolerance to impose strict inequality while
-          restricting domain of 'x' in master problem **/
       /*
-      //NOTE: 2*lowerRowNum is max size for tol
-      double *tol = new double[2*lowerRowNum];
       //Data required to identify linking cols
       int *linkingColId = new int[upperColNum + lowerColNum];
       memcpy(linkingColId, origMibsModel.getFixedInd(),
               sizeof(int)*(upperColNum + lowerColNum));
       int linkingColNum = origMibsModel.getSizeFixedInd();
-      int tolProbColNum = upperColNum;
-      int tolProbRowNum = 1;
-      double *tolProbObjCoef = new double[tolProbColNum];
-      double tolProbObjSense = 1.0;
-      double *tolProbColLb = new double[tolProbColNum];
-      double *tolProbColUb = new double[tolProbColNum];
-      memcpy(tolProbColLb, origColLb, sizeof(double)*tolProbColNum);
-      memcpy(tolProbColUb, origColUb, sizeof(double)*tolProbColNum);
-      char *tolProbColType = new char[tolProbColNum];
-      memcpy(tolProbColType, colType, sizeof(char)*tolProbColNum);
-      double *tolProbRowLb = new double[tolProbRowNum];
-      double *tolProbRowUb = new double[tolProbRowNum];
-      tolProbRowUb[0] = infinity;
-      double tolProbObjVal;
-      double *tolProbBestSolution = new double[tolProbColNum];
-      //Triplets to initialize tolProbMat
-      //Declaring maximum memory
-      int maxNumEntries = tolProbRowNum * tolProbColNum;
-      int *rowIndex = new int[maxNumEntries];
-      CoinFillN(rowIndex, maxNumEntries, 0);
-      int *colIndex = new int[maxNumEntries];
-      CoinIotaN(colIndex, maxNumEntries, 0);
-      double * entryVal = new double[maxNumEntries];
-      CoinZeroN(entryVal, maxNumEntries);
-      CoinPackedMatrix *tolProbMat = new CoinPackedMatrix(true, rowIndex, colIndex, entryVal, maxNumEntries);
-      bool tolProbInfeasible = false;
-      //Parameter for identifying which MILP solver needs to be used
-      //FIXME: Have this as a user input parameter!
-      std::string tolProbSolver = "CPLEX";
-      //FIXME: set # of threads appropriately later (as a part of argc/argv?)!
-      int tolProbMaxThreads = 1;
-      //Epsilon to be used for representing strict inequality constraint in tolProb
-      double epsilon = 100*1e-6;
       */
 
       //Misc declarations
       bool termFlag = false, timeUp = false;
       int iterCounter = 0;
       double bilevelVFExactValue = infinity, boundOnLbf, dualBoundOnLevel2 = 0;
-      double bigMForUbf = 1e+7, *bigMForLbf, singleBigMForLbf;
+      double bigMForUbf = 1e+7, singleBigMForLbf;
       double dualBoundOnSubproblem = 0, primalBoundOnSubproblem = 0;
       double *maxValForDomainRest = new double[lowerRowNum];
       double *minValForDomainRest = new double[lowerRowNum];
@@ -1403,7 +1358,7 @@ int main(int argc, char* argv[])
           //FIXME: are the criteria correct?
           clock_t current = clock();
           double timeTillNow = (double) (current - begin) / CLOCKS_PER_SEC;
-          timeUp = ((timeTillNow >= 3600) ? true : false);
+          timeUp = ((timeTillNow >= 7200) ? true : false);
           if (masterInfeasible || (!subproblemInfeasible &&
                   (fabs(bilevelVFExactValue - bilevelVFApproxValue) <= etol))
                   || timeUp) {
@@ -1450,9 +1405,6 @@ int main(int argc, char* argv[])
                       feasibleLeafNodeNum++;
                   }
               }
-
-              //bigM for LBF of subproblem
-              bigMForLbf = new double[feasibleLeafNodeNum];
 
               //START finding products
               //Product of constraint matrix (A^2 or (A^1; A^2)) and dual info.
@@ -1666,6 +1618,10 @@ int main(int argc, char* argv[])
                           singleBigMForLbf = bigMForLbf;
                       }
                   }
+                  if (singleBigMForLbf <= etol) {
+                      //bigM = 0; make is some nonzero
+                      singleBigMForLbf = boundOnLbf;
+                  }
               } else {
                   //bigM for LBF of subproblem
                   singleBigMForLbf = 0;
@@ -1693,6 +1649,10 @@ int main(int argc, char* argv[])
                           singleBigMForLbf = bigMForLbf;
                       }
                   }
+                  if (singleBigMForLbf <= etol) {
+                      //bigM = 0; make is some nonzero
+                      singleBigMForLbf = boundOnLbf;
+                  }
               }
               //END finding products
 
@@ -1701,153 +1661,18 @@ int main(int argc, char* argv[])
               numBinColsForDomainRest = 0;
               //FIXME: combine the code of all for loops of the following kind
               if (!level2Infeasible) {
-//                  CoinZeroN(tol, 2*lowerRowNum);
                   for (i = 0; i < lowerRowNum; i++) {
                       int ind = contRestBasisIndices[i];
                       if (ind < lowerContColNum) {
                           if (lowerContColFiniteLbId[ind]) {
-                              /*
-                              //Finding "tol"
-                              double tolLB = 0.0;
-                              for (j = 0; j < upperColNum; j++) {
-                                  double currCoef = product4[i][j];
-                                  if (currCoef < -etol) {
-                                      tolLB = currCoef;
-                                      break;
-                                  }
-                              }
-                              int k;
-                              for (k = j+1; k < upperColNum; k++) {
-                                  double currCoef = product4[i][k];
-                                  if ((currCoef < -etol) && (currCoef < tol[numBinColsForDomainRest])) {
-                                      tolLB = currCoef;
-                                  }
-                              }
-
-                              //Setting data matrices and vectors
-                              memcpy(tolProbObjCoef, product4[i], sizeof(double)*upperColNum);
-                              tolProbRowLb[0] = -product5[i] - contRestColLb[ind] + epsilon;
-                              for (j = 0; j < upperColNum; j++) {
-                                  tolProbMat->modifyCoefficient(0, j, product4[i][j]);
-                              }
-                              //Actual solving
-                              solver = getSolver(tolProbSolver, tolProbMaxThreads, false);
-                              solver->setDblParam(OsiPrimalObjectiveLimit, tolLB);
-                              tolProbInfeasible = solve(solver,
-                                      tolProbColNum, tolProbObjCoef, tolProbObjSense,
-                                      tolProbColLb, tolProbColUb, tolProbColType,
-                                      tolProbMat, tolProbRowLb, tolProbRowUb,
-                                      &tolProbObjVal, tolProbBestSolution);
-                              if (tolProbInfeasible) {
-                                  //0.1 is some random value
-                                  //FIXME: Change 0.1 to something more meaningful that
-                                  //    depends on bigMForDomainRest (both lower and upper bounds)
-                                  tol[numBinColsForDomainRest] = 0.1;
-                              } else {
-                                  assert(solver->isProvenOptimal());
-                                  double tolTemp = fabs(-product5[i] - contRestColLb[ind] - tolProbObjVal);
-                                  assert(tolTemp > etol);
-                                  tol[numBinColsForDomainRest] = tolTemp;
-                              }
-                              */
-
                               //Counting # of binary variables for domain rest.
                               numBinColsForDomainRest++;
                           }
                           if (lowerContColFiniteUbId[ind]) {
-                              /*
-                              //Finding "tol"
-                              double tolLB = 0.0;
-                              for (j = 0; j < upperColNum; j++) {
-                                  double currCoef = product4[i][j];
-                                  if (currCoef < -etol) {
-                                      tolLB = currCoef;
-                                      break;
-                                  }
-                              }
-                              int k;
-                              for (k = j+1; k < upperColNum; k++) {
-                                  double currCoef = product4[i][k];
-                                  if ((currCoef < -etol) && (currCoef < tol[numBinColsForDomainRest])) {
-                                      tolLB = currCoef;
-                                  }
-                              }
-                              //Setting data matrices and vectors
-                              tolProbRowLb[0] = product5[i] + contRestColUb[ind] + epsilon;
-                              for (j = 0; j < upperColNum; j++) {
-                                  tolProbObjCoef[j] = -product4[i][j];
-                                  tolProbMat->modifyCoefficient(0, j, -product4[i][j]);
-                              }
-                              //Actual solving
-                              solver = getSolver(tolProbSolver, tolProbMaxThreads, false);
-                              solver->setDblParam(OsiPrimalObjectiveLimit, tolLB);
-                              tolProbInfeasible = solve(solver,
-                                      tolProbColNum, tolProbObjCoef, tolProbObjSense,
-                                      tolProbColLb, tolProbColUb, tolProbColType,
-                                      tolProbMat, tolProbRowLb, tolProbRowUb,
-                                      &tolProbObjVal, tolProbBestSolution);
-                              if (tolProbInfeasible) {
-                                  //0.1 is some random value
-                                  //FIXME: Change 0.1 to something more meaningful that
-                                  //    depends on bigMForDomainRest (both lower and upper bounds)
-                                  tol[numBinColsForDomainRest] = 0.1;
-                              } else {
-                                  assert(solver->isProvenOptimal());
-                                  double tolTemp = fabs(product5[i] + contRestColLb[ind] - tolProbObjVal);
-                                  assert(tolTemp > etol);
-                                  tol[numBinColsForDomainRest] = tolTemp;
-                              }
-                              */
-
                               //Counting # of binary variables for domain rest.
                               numBinColsForDomainRest++;
                           }
                       } else {
-                          /*
-                          //Finding "tol"
-                          double tolLB = 0.0;
-                          for (j = 0; j < upperColNum; j++) {
-                              double currCoef = product4[i][j];
-                              if (currCoef < -etol) {
-                                  tolLB = currCoef;
-                                  break;
-                              }
-                          }
-                          int k;
-                          for (k = j+1; k < upperColNum; k++) {
-                              double currCoef = product4[i][k];
-                              if ((currCoef < -etol) && (currCoef < tol[numBinColsForDomainRest])) {
-                                  tolLB = currCoef;
-                              }
-                          }
-
-                          //Setting data matrices and vectors
-                          memcpy(tolProbObjCoef, product4[i], sizeof(double)*upperColNum);
-                          tolProbRowLb[0] = -product5[i] + epsilon;
-                          for (j = 0; j < upperColNum; j++) {
-                              tolProbMat->modifyCoefficient(0, j, product4[i][j]);
-                          }
-                          //Actual solving
-                          solver = getSolver(tolProbSolver, tolProbMaxThreads, false);
-                          solver->setDblParam(OsiPrimalObjectiveLimit, tolLB);
-                          tolProbInfeasible = solve(solver,
-                                  tolProbColNum, tolProbObjCoef, tolProbObjSense,
-                                  tolProbColLb, tolProbColUb, tolProbColType,
-                                  tolProbMat, tolProbRowLb, tolProbRowUb,
-                                  &tolProbObjVal, tolProbBestSolution);
-                          if (tolProbInfeasible) {
-                              //0.1 is some random value
-                              //FIXME: Change 0.1 to something more meaningful that
-                              //    depends on bigMForDomainRest (both lower and upper bounds)
-                              tol[numBinColsForDomainRest] = 0.1;
-                          } else {
-                              assert(solver->isProvenOptimal());
-                              double tolTemp = fabs(-product5[i] - tolProbObjVal);
-                              assert(tolTemp > etol);
-                              tol[numBinColsForDomainRest] = tolTemp;
-                          }
-                          */
-
                           //Counting # of binary variables for domain rest.
                           numBinColsForDomainRest++;
                       }
@@ -2224,18 +2049,26 @@ int main(int argc, char* argv[])
 
               for (i = 0; i < leafNodeNum; i++) {
                   delete [] product1[i];
-//                  delete [] leafUbVal[i];
-//                  delete [] leafLbVal[i];
-//                  delete [] leafUbInd[i];
-//                  delete [] leafLbInd[i];
+                  /*
+                  if (leafUbCnt[i]) {
+                      delete [] leafUbVal[i];
+                      delete [] leafUbInd[i];
+                  }
+                  if (leafLbCnt[i]) {
+                      delete [] leafLbVal[i];
+                      delete [] leafLbInd[i];
+                  }
+                  */
               }
-//              delete [] leafUbVal;
-//              delete [] leafLbVal;
-//              delete [] leafUbInd;
-//              delete [] leafLbInd;
-//              delete [] leafUbCnt;
-//              delete [] leafLbCnt;
-//              delete [] leafFeasibilityStatusInd;
+              /*
+              delete [] leafUbVal;
+              delete [] leafLbVal;
+              delete [] leafUbInd;
+              delete [] leafLbInd;
+              */
+              delete [] leafUbCnt;
+              delete [] leafLbCnt;
+              delete [] leafFeasibilityStatusInd;
               delete [] newColStarts;
               delete [] product5;
               delete [] product2;
@@ -2244,7 +2077,6 @@ int main(int argc, char* argv[])
               delete [] lbPosDjProduct;
               delete [] singleDual;
               delete [] product1;
-              delete [] bigMForLbf;
               delete [] feasibleLeafNodeInd;
               delete [] fullDualOfExtraRow;
               if (!level2Infeasible) {
@@ -2284,19 +2116,43 @@ int main(int argc, char* argv[])
                   std::cout << "Error: unknown exit criterion triggered!" << std::endl;
               }
               std::cout << std::endl;
+
+              /*
+              for (i = 0; i < leafNodeNum; i++) {
+                  if (leafUbCnt[i]) {
+                      delete [] leafUbVal[i];
+                      delete [] leafUbInd[i];
+                  }
+                  if (leafLbCnt[i]) {
+                      delete [] leafLbVal[i];
+                      delete [] leafLbInd[i];
+                  }
+              }
+              delete [] leafUbVal;
+              delete [] leafLbVal;
+              delete [] leafUbInd;
+              delete [] leafLbInd;
+              */
+              delete [] leafUbCnt;
+              delete [] leafLbCnt;
+              delete [] leafFeasibilityStatusInd;
+              if (!level2Infeasible) {
+                  for (i = 0; i < lowerRowNum; i++) {
+                      delete [] contRestBasisInverseRow[i];
+                  }
+              }
           }
           iterCounter++;
       }
 
 //      delete [] lowerObjCoef;
 //      delete [] lowerColInd;
-//      delete [] bigMForLbf;
 //      delete [] feasibleLeafNodeInd;
       delete [] minValForDomainRest;
       delete [] maxValForDomainRest;
 //      delete [] linkingColId;
-//      delete [] tol;
       delete [] level2IntColRowActivity;
+      delete [] contRestBasisInverseRowLcm;
       delete [] contRestBasisIndices;
       delete [] contRestBasisInverseRow;
       delete [] contRestDualSolution;
@@ -2315,6 +2171,7 @@ int main(int argc, char* argv[])
       delete leafNegDjByRow;
       delete leafPosDjByRow;
       delete leafDualByRow;
+      delete [] subproblemBestSolution;
       delete [] tempSubproblemColUb;
       delete [] tempSubproblemColLb;
       delete [] lowerRowRhs;
