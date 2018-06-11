@@ -706,9 +706,9 @@ int main(int argc, char* argv[])
       //FIXME: Find a workaround for following 1500.
       int i;
       for (i = 0; i < (upperColNum + lowerColNum); i++) {
-          if (origColUb[i] >= 11) {
+          if (origColUb[i] >= 1500) {
               std::cout << "\n\nCheck!!\n\n";
-              origColUb[i] = 10;
+              origColUb[i] = 1500;
           }
       }
 
@@ -1103,6 +1103,7 @@ int main(int argc, char* argv[])
       assert(extraColNum == lowerIneqRowNum);
       bool contRestInfeasible = false;
       double *contRestBestSolution = new double[contRestColNum];
+      double *contRestBestSolutionNonBasics = new double[contRestColNum];
       double *contRestDualSolution = new double[lowerRowNum];
       double *contRestDjSolution = new double[contRestColNum];
       double contRestObjVal = 0;
@@ -1285,6 +1286,11 @@ int main(int argc, char* argv[])
                       solver->getBInvRow(i, contRestBasisInverseRow[i]);
                   }
                   solver->getBasics(contRestBasisIndices);
+                  //Building non-basic part of opt. sol. by zeroing basic part
+                  memcpy(contRestBestSolutionNonBasics, contRestBestSolution, sizeof(double)*contRestColNum);
+                  for (i = 0; i < lowerRowNum; i++) {
+                      contRestBestSolutionNonBasics[contRestBasisIndices[i]] = 0;
+                  }
                   delete solver;
 
                   if (contRestInfeasible) {
@@ -1524,6 +1530,10 @@ int main(int argc, char* argv[])
               double product6 = 0;
               //Product of cont. rest.'s dj and col. bounds
               double product8 = 0;
+              //Product of cont. rest. non-basic part of matrix and non-basic variables
+              double *product9 = new double[lowerRowNum];
+              //Product of cont. rest. basis inverse and product9
+              double *product10 = new double[lowerRowNum];
               if (!level2Infeasible) {
                   //Product of constraint matrix (A^2) and dual of continuous restriction
                   CoinZeroN(product2, upperColNum);
@@ -1582,6 +1592,19 @@ int main(int argc, char* argv[])
                       } else if (contRestDjSolution[i] < -etol) {
                           assert(contRestColUb[i] < infinity);
                           product8 += contRestDjSolution[i]*contRestColUb[i];
+                      }
+                  }
+
+                  //Product of cont. rest. non-basic part of matrix and non-basic variables
+                  CoinZeroN(product9, lowerRowNum);
+                  contRestMat.times(contRestBestSolutionNonBasics, product9);
+
+                  //Product of cont. rest. basis inverse and product9
+                  for (i = 0; i < lowerRowNum; i++) {
+                      product10[i] = 0;
+                      for (j = 0; j < lowerRowNum; j++) {
+                          product10[i] += contRestBasisInverseRowLcm[i]*contRestBasisInverseRow[i][j]*
+                              product9[j];
                       }
                   }
 
@@ -1731,16 +1754,16 @@ int main(int argc, char* argv[])
                       if (ind < lowerContColNum) {
                           if (lowerContColFiniteLbId[ind]) {
                               masterRowLbVec.resize((masterRowNum + feasibleLeafNodeNum + 1 + (counterTemp+1)),
-                                      (product5[i] + contRestBasisInverseRowLcm[i]*contRestColLb[ind]));
+                                      (product5[i] + product10[i] + contRestBasisInverseRowLcm[i]*contRestColLb[ind]));
                               counterTemp++;
                           }
                           if (lowerContColFiniteUbId[ind]) {
                               masterRowLbVec.resize((masterRowNum + feasibleLeafNodeNum + 1 + (counterTemp+1)),
-                                      (-product5[i] - contRestBasisInverseRowLcm[i]*contRestColUb[ind]));
+                                      (-product5[i] - product10[i] - contRestBasisInverseRowLcm[i]*contRestColUb[ind]));
                               counterTemp++;
                           }
                       } else {
-                          masterRowLbVec.resize((masterRowNum + feasibleLeafNodeNum + 1 + (counterTemp+1)), product5[i]);
+                          masterRowLbVec.resize((masterRowNum + feasibleLeafNodeNum + 1 + (counterTemp+1)), product5[i] + product10[i]);
                           counterTemp++;
                       }
                   }
@@ -1758,37 +1781,37 @@ int main(int argc, char* argv[])
                       if (ind < lowerContColNum) {
                           if (lowerContColFiniteLbId[ind]) {
                               //Note: 10 is a random multiplier
-                              double bigMForDomainRest = 10*fabs(-product5[i] - minValForDomainRest[i] -
+                              double bigMForDomainRest = 10*fabs(-product5[i] - product10[i] - minValForDomainRest[i] -
                                       contRestBasisInverseRowLcm[i]*contRestColLb[ind]);
                               if (bigMForDomainRest <= etol) {
                                   // bigM = 0; 10 is a random number!
                                   bigMForDomainRest = 10;
                               }
                               masterRowUbVec.resize((masterRowNum + feasibleLeafNodeNum + 1 + numBinColsForDomainRest +
-                                          (counterTemp+1)), (bigMForDomainRest + product5[i] +
+                                          (counterTemp+1)), (bigMForDomainRest + product5[i] + product10[i] +
                                               contRestBasisInverseRowLcm[i]*contRestColLb[ind] - 1));
                               counterTemp++;
                           }
                           if (lowerContColFiniteUbId[ind]) {
-                              double bigMForDomainRest = 10*fabs(product5[i] + maxValForDomainRest[i] +
+                              double bigMForDomainRest = 10*fabs(product5[i] + product10[i] + maxValForDomainRest[i] +
                                       contRestBasisInverseRowLcm[i]*contRestColUb[ind]);
                               if (bigMForDomainRest <= etol) {
                                   // bigM = 0; 10 is a random number!
                                   bigMForDomainRest = 10;
                               }
                               masterRowUbVec.resize((masterRowNum + feasibleLeafNodeNum + 1 + numBinColsForDomainRest +
-                                          (counterTemp+1)), (bigMForDomainRest - product5[i] -
+                                          (counterTemp+1)), (bigMForDomainRest - product5[i] - product10[i] -
                                               contRestBasisInverseRowLcm[i]*contRestColUb[ind] - 1));
                               counterTemp++;
                           }
                       } else {
-                          double bigMForDomainRest = 10*fabs(-product5[i] - minValForDomainRest[i]);
+                          double bigMForDomainRest = 10*fabs(-product5[i] - product10[i] - minValForDomainRest[i]);
                           if (bigMForDomainRest <= etol) {
                               // bigM = 0; 10 is a random number!
                               bigMForDomainRest = 10;
                           }
                           masterRowUbVec.resize((masterRowNum + feasibleLeafNodeNum + 1 + numBinColsForDomainRest +
-                                      (counterTemp+1)), (bigMForDomainRest + product5[i] - 1));
+                                      (counterTemp+1)), (bigMForDomainRest + product5[i] + product10[i] - 1));
                           counterTemp++;
                       }
                   }
@@ -1861,7 +1884,7 @@ int main(int argc, char* argv[])
                       int ind = contRestBasisIndices[i];
                       if (ind < lowerContColNum) {
                           if (lowerContColFiniteLbId[ind]) {
-                              double bigMForDomainRest = -product5[i] - maxValForDomainRest[i] -
+                              double bigMForDomainRest = -product5[i] - product10[i]- maxValForDomainRest[i] -
                                   contRestBasisInverseRowLcm[i]*contRestColLb[ind];
                               //Note: 10 is a random multiplier
                               if (bigMForDomainRest > etol) {
@@ -1881,7 +1904,7 @@ int main(int argc, char* argv[])
                               counterTemp++;
                           }
                           if (lowerContColFiniteUbId[ind]) {
-                              double bigMForDomainRest = product5[i] + minValForDomainRest[i] +
+                              double bigMForDomainRest = product5[i] + product10[i] + minValForDomainRest[i] +
                                   contRestBasisInverseRowLcm[i]*contRestColUb[ind];
                               if (bigMForDomainRest > etol) {
                                   bigMForDomainRest = -10*bigMForDomainRest;
@@ -1900,7 +1923,7 @@ int main(int argc, char* argv[])
                               counterTemp++;
                           }
                       } else {
-                          double bigMForDomainRest = -product5[i] - maxValForDomainRest[i];
+                          double bigMForDomainRest = -product5[i] - product10[i] - maxValForDomainRest[i];
                           if (bigMForDomainRest > etol) {
                               bigMForDomainRest = -10*bigMForDomainRest;
                           } else if (bigMForDomainRest < etol) {
@@ -1925,7 +1948,7 @@ int main(int argc, char* argv[])
                       if (ind < lowerContColNum) {
                           if (lowerContColFiniteLbId[ind]) {
                               //Note: 10 is a random multiplier
-                              double bigMForDomainRest = 10*fabs(-product5[i] - minValForDomainRest[i] -
+                              double bigMForDomainRest = 10*fabs(-product5[i] - product10[i] - minValForDomainRest[i] -
                                       contRestBasisInverseRowLcm[i]*contRestColLb[ind]);
                               if (bigMForDomainRest <= etol) {
                                   // bigM = 0; 10 is a random number!
@@ -1940,7 +1963,7 @@ int main(int argc, char* argv[])
                               counterTemp++;
                           }
                           if (lowerContColFiniteUbId[ind]) {
-                              double bigMForDomainRest = 10*fabs(product5[i] + maxValForDomainRest[i] +
+                              double bigMForDomainRest = 10*fabs(product5[i] + product10[i] + maxValForDomainRest[i] +
                                       contRestBasisInverseRowLcm[i]*contRestColUb[ind]);
                               if (bigMForDomainRest <= etol) {
                                   // bigM = 0; 10 is a random number!
@@ -1955,7 +1978,7 @@ int main(int argc, char* argv[])
                               counterTemp++;
                           }
                       } else {
-                          double bigMForDomainRest = 10*fabs(-product5[i] - minValForDomainRest[i]);
+                          double bigMForDomainRest = 10*fabs(-product5[i] - product10[i] - minValForDomainRest[i]);
                           if (bigMForDomainRest <= etol) {
                               // bigM = 0; 10 is a random number!
                               bigMForDomainRest = 10;
@@ -2086,6 +2109,8 @@ int main(int argc, char* argv[])
               delete [] leafLbCnt;
               delete [] leafFeasibilityStatusInd;
               delete [] newColStarts;
+              delete [] product10;
+              delete [] product9;
               delete [] product5;
               delete [] product2;
               delete [] product7;
