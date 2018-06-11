@@ -169,7 +169,7 @@ bool solve(OsiSolverInterface *solver,
     }
     solver->setObjSense(objSense);
 
-    bool ind = false;
+    bool ind = true;
     if (ind) {
         solver->writeLp("problemAtHand");
     }
@@ -706,8 +706,9 @@ int main(int argc, char* argv[])
       //FIXME: Find a workaround for following 1500.
       int i;
       for (i = 0; i < (upperColNum + lowerColNum); i++) {
-          if (origColUb[i] >= infinity) {
-              origColUb[i] = 1500;
+          if (origColUb[i] >= 11) {
+              std::cout << "\n\nCheck!!\n\n";
+              origColUb[i] = 10;
           }
       }
 
@@ -1103,6 +1104,7 @@ int main(int argc, char* argv[])
       bool contRestInfeasible = false;
       double *contRestBestSolution = new double[contRestColNum];
       double *contRestDualSolution = new double[lowerRowNum];
+      double *contRestDjSolution = new double[contRestColNum];
       double contRestObjVal = 0;
       double **contRestBasisInverseRow = new double*[lowerRowNum];
       int *contRestBasisIndices = new int[lowerRowNum];
@@ -1261,6 +1263,7 @@ int main(int argc, char* argv[])
                           &contRestMat, contRestRowLb, contRestRowUb,
                           &contRestObjVal, contRestBestSolution);
                   memcpy(contRestDualSolution, solver->getRowPrice(), sizeof(double)*lowerRowNum);
+                  memcpy(contRestDjSolution, solver->getReducedCost(), sizeof(double)*contRestColNum);
                   soplex::SoPlex *soplex =
                       dynamic_cast<OsiSpxSolverInterface*>(solver)->getLpPtr();
                   for (i = 0; i < lowerRowNum; i++) {
@@ -1519,6 +1522,8 @@ int main(int argc, char* argv[])
               double *product5 = new double[lowerRowNum];
               //Product of dual of cont. rest. and lowerRowRhs
               double product6 = 0;
+              //Product of cont. rest.'s dj and col. bounds
+              double product8 = 0;
               if (!level2Infeasible) {
                   //Product of constraint matrix (A^2) and dual of continuous restriction
                   CoinZeroN(product2, upperColNum);
@@ -1569,6 +1574,17 @@ int main(int argc, char* argv[])
                       product6 += contRestDualSolution[i]*lowerRowRhs[i];
                   }
 
+                  //Product of cont. rest.'s dj and col. bounds
+                  for (i = 0; i < contRestColNum; i++) {
+                      if (contRestDjSolution[i] > etol) {
+                          assert(contRestColLb[i] > -infinity);
+                          product8 += contRestDjSolution[i]*contRestColLb[i];
+                      } else if (contRestDjSolution[i] < -etol) {
+                          assert(contRestColUb[i] < infinity);
+                          product8 += contRestDjSolution[i]*contRestColUb[i];
+                      }
+                  }
+
                   //bigM for UBF of level2 problem
                   double maxVal = 0;
                   for (i = 0; i < upperColNum; i++) {
@@ -1579,7 +1595,7 @@ int main(int argc, char* argv[])
                           maxVal += coef*masterColUb[i];
                       }
                   }
-                  double ubfMin = product6 - product3 + level2IntObjVal - maxVal;
+                  double ubfMin = product6 - product3 + level2IntObjVal + product8 - maxVal;
                   bigMForUbf = fabs(dualBoundOnLevel2) + fabs(ubfMin);
 
                   //bigM for LBF of subproblem
@@ -1609,7 +1625,7 @@ int main(int argc, char* argv[])
                       bigMForLbf = product7[feasibleLeafNodeInd[i]] +
                                lbPosDjProduct[feasibleLeafNodeInd[i]] +
                                ubNegDjProduct[feasibleLeafNodeInd[i]] +
-                               fullDualOfExtraRow[feasibleLeafNodeInd[i]]*(product6 - product3 + level2IntObjVal);
+                               fullDualOfExtraRow[feasibleLeafNodeInd[i]]*(product6 - product3 + level2IntObjVal + product8);
                       tempMax = fabs(bigMForLbf - minVal1 + maxVal2);
                       tempMin = fabs(bigMForLbf - maxVal1 + minVal2);
                       //Note: 4 is a random multiplier
@@ -1705,7 +1721,7 @@ int main(int argc, char* argv[])
                               (product7[feasibleLeafNodeInd[i]] +
                                lbPosDjProduct[feasibleLeafNodeInd[i]] +
                                ubNegDjProduct[feasibleLeafNodeInd[i]] +
-                               fullDualOfExtraRow[feasibleLeafNodeInd[i]]*(product6 - product3 + level2IntObjVal) -
+                               fullDualOfExtraRow[feasibleLeafNodeInd[i]]*(product6 - product3 + level2IntObjVal + product8) -
                                singleBigMForLbf));
                   }
                   masterRowLbVec.resize((masterRowNum + feasibleLeafNodeNum + 1), 1);
@@ -2155,6 +2171,7 @@ int main(int argc, char* argv[])
       delete [] contRestBasisInverseRowLcm;
       delete [] contRestBasisIndices;
       delete [] contRestBasisInverseRow;
+      delete [] contRestDjSolution;
       delete [] contRestDualSolution;
       delete [] contRestBestSolution;
       delete [] contRestRowUb;
