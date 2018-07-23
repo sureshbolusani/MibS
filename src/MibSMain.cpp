@@ -102,8 +102,9 @@ OsiSolverInterface* getSolver(std::string problemSolver, int maxThreads,
         CPXENVptr cpxEnv = 
             dynamic_cast<OsiCpxSolverInterface*>(solver)->getEnvironmentPtr();
         assert(cpxEnv);
-        CPXsetintparam(cpxEnv, CPX_PARAM_SCRIND, CPX_OFF);
         CPXsetintparam(cpxEnv, CPX_PARAM_THREADS, maxThreads);
+
+        solver->setHintParam(OsiDoReducePrint, true, OsiHintDo);
 #else
         throw CoinError("CPLEX chosen as solver but it has not been enabled",
                 "getSolver",
@@ -134,7 +135,6 @@ OsiSolverInterface* getSolver(std::string problemSolver, int maxThreads,
                 "getSolver",
                 "MibSMain");
     }
-    solver->setHintParam(OsiDoReducePrint, true, OsiHintDo);
 
     return solver;
 }
@@ -153,6 +153,7 @@ bool solve(OsiSolverInterface *solver,
     int i;
     bool isLp = true;
     // Loading problem data and related information
+    solver->setObjSense(objSense);
     solver->loadProblem(*mat, colLb, colUb,
             objCoef, rowLb, rowUb);
     for (i = 0; i < colNum; i++) {
@@ -167,11 +168,14 @@ bool solve(OsiSolverInterface *solver,
                     "MibSMain");
         }
     }
-    solver->setObjSense(objSense);
 
-    bool ind = true;
-    if (ind) {
+    bool indLp = true;
+    bool indMps = false;
+    if (indLp) {
         solver->writeLp("problemAtHand");
+    }
+    if (indMps) {
+        solver->writeMps("problemAtHand");
     }
 
     // Solving the problem
@@ -237,7 +241,7 @@ void getDualData(OsiSolverInterface *solver, double boundOnBigM,
         //Obtain problem data from SYMPHONY
         int numCols, numRows;
         double *objCoef, *colLb, *colUb, *rowLb, *rowUb, *rowRange, *rhs;
-        double objSense, objVal, bigM = 1e+8, etol = 1e-7;
+        double objSense, objVal, bigM = 1e+7, etol = 1e-7;
         CoinPackedMatrix *matByRow;
 
         numCols = solver->getNumCols();
@@ -253,10 +257,11 @@ void getDualData(OsiSolverInterface *solver, double boundOnBigM,
         objVal = solver->getObjValue();
         if (solver->isProvenOptimal()) {
             bigM = objVal;
-        }
-        //Update bigM further based on max of subproblem's objective function
-        if (bigM >= boundOnBigM + etol) {
-            bigM = boundOnBigM;
+
+            //Update bigM further based on max of subproblem's objective function
+            if (bigM >= boundOnBigM + etol) {
+                bigM = boundOnBigM;
+            }
         }
 
         objCoef = const_cast <double *> (solver->getObjCoefficients());
@@ -429,9 +434,9 @@ void getDualData(OsiSolverInterface *solver, double boundOnBigM,
                         objCoefRayProd += dualObjCoef[j]*unbddRay[j];
                     }
                     lambda = (bigM - dualObjVal)/(objCoefRayProd);
-                    if (lambda < -etol) {
+                    if (lambda <= etol) {
                         assert(!((objCoefRayProd < -etol) && (bigM - dualObjVal > etol)));
-                        //lambda is negative ==> any positive lambda is a satisfactory value
+                        //{lambda <= 0} ==> any positive lambda is a satisfactory value
                         lambda = 1;
                     }
 
@@ -707,7 +712,7 @@ int main(int argc, char* argv[])
       int i;
       for (i = 0; i < (upperColNum + lowerColNum); i++) {
           if (origColUb[i] >= 1500) {
-              std::cout << "\n\nCheck!!\n\n";
+//              std::cout << "\n\nCheck!!\n\n";
               origColUb[i] = 1500;
           }
       }
@@ -1011,14 +1016,19 @@ int main(int argc, char* argv[])
               &masterMat, masterRowLb, masterRowUb,
               &masterObjVal, masterBestSolution);
       delete solver;
+      //Rounding integer variables and reevaluating master obj. value
+      masterObjVal = 0;
+      for (i = 0; i < masterColNum; i++) {
+          if (masterColType[i] == 'I' || masterColType[i] == 'B') {
+              masterBestSolution[i] = round(masterBestSolution[i]);
+          }
+          masterObjVal += masterBestSolution[i]*masterObjCoef[i];
+      }
       //Save upperColNum part of best solution
       memcpy(masterBestSolutionUpperCols, masterBestSolution, sizeof(double)*upperColNum);
       delete [] masterBestSolution;
-      //Rounding integer variables and evaluating first level part of obj. value
+      //Evaluating first level part of obj. value
       for (i = 0; i < upperColNum; i++) {
-          if (colType[i] == 'I' || colType[i] == 'B') {
-              masterBestSolutionUpperCols[i] = round(masterBestSolutionUpperCols[i]);
-          }
           optObjVal += masterObjCoef[i]*masterBestSolutionUpperCols[i];
       }
 
@@ -1111,7 +1121,7 @@ int main(int argc, char* argv[])
       int *contRestBasisIndices = new int[lowerRowNum];
       int numBinColsForDomainRest = 0;
       soplex::SSVectorRational contRestBasisInverseRows(lowerRowNum*contRestColNum);
-      int *contRestBasisInverseRowLcm = new int[lowerRowNum];
+      unsigned long int *contRestBasisInverseRowLcm = new unsigned long int[lowerRowNum];
 
       //integer restriction matrix of second level rows for second level cols
       CoinPackedMatrix intRestMat(rowCoefMatrixByCol);
@@ -1134,6 +1144,41 @@ int main(int argc, char* argv[])
               sizeof(int)*(upperColNum + lowerColNum));
       int linkingColNum = origMibsModel.getSizeFixedInd();
       */
+      /** Initial setup for finding tolerance to impose strict inequality while
+        restricting domain of 'x' in master problem **/
+      //NOTE: 2*lowerRowNum is max size for tol
+      double *tol = new double[2*lowerRowNum];
+      int tolProbColNum = upperColNum;
+      int tolProbRowNum = 1;
+      double *tolProbObjCoef = new double[tolProbColNum];
+      double tolProbObjSense = 1.0;
+      double *tolProbColLb = new double[tolProbColNum];
+      double *tolProbColUb = new double[tolProbColNum];
+      memcpy(tolProbColLb, origColLb, sizeof(double)*tolProbColNum);
+      memcpy(tolProbColUb, origColUb, sizeof(double)*tolProbColNum);
+      char *tolProbColType = new char[tolProbColNum];
+      memcpy(tolProbColType, colType, sizeof(char)*tolProbColNum);
+      double *tolProbRowLb = new double[tolProbRowNum];
+      double *tolProbRowUb = new double[tolProbRowNum];
+      tolProbRowUb[0] = infinity;
+      double tolProbObjVal;
+      double *tolProbBestSolution = new double[tolProbColNum];
+      //Triplets to initialize tolProbMat
+      //Declaring maximum memory
+      int maxNumEntries = tolProbRowNum * tolProbColNum;
+      int *rowIndex = new int[maxNumEntries];
+      CoinFillN(rowIndex, maxNumEntries, 0);
+      int *colIndex = new int[maxNumEntries];
+      CoinIotaN(colIndex, maxNumEntries, 0);
+      double * entryVal = new double[maxNumEntries];
+      CoinZeroN(entryVal, maxNumEntries);
+      CoinPackedMatrix *tolProbMat = new CoinPackedMatrix(true, rowIndex, colIndex, entryVal, maxNumEntries);
+      bool tolProbInfeasible = false;
+      //Parameter for identifying which MILP solver needs to be used
+      //FIXME: Have this as a user input parameter!
+      std::string tolProbSolver = "CPLEX";
+      //FIXME: set # of threads appropriately later (as a part of argc/argv?)!
+      int tolProbMaxThreads = 1;
 
       //Misc declarations
       bool termFlag = false, timeUp = false;
@@ -1218,15 +1263,23 @@ int main(int argc, char* argv[])
                       &level2ObjVal, level2BestSolution);
               if (!level2Infeasible) {
                   assert(solver->isProvenOptimal());
+                  level2ObjVal = 0;
+                  for (i = 0; i < lowerColNum; i++) {
+                      if (subproblemColType[i] == 'I' || subproblemColType[i] == 'B') {
+                          level2BestSolution[i] = round(level2BestSolution[i]);
+                      }
+                      level2ObjVal += level2BestSolution[i] * lowerObjCoef[i];
+                  }
               }
               delete solver;
-              for (i = 0; i < lowerIntColNum; i++) {
-                  level2IntBestSolution[i] = round(level2BestSolution[lowerIntColInd[i]]);
-              }
 
               if (!level2Infeasible) {
                   //If second level feasible, solve the continuous restriction
                   //    for the known level2IntBestSolution
+
+                  for (i = 0; i < lowerIntColNum; i++) {
+                      level2IntBestSolution[i] = level2BestSolution[lowerIntColInd[i]];
+                  }
 
                   //Finding product of integer best solution and corresponding obj. vector
                   level2IntObjVal = 0;
@@ -1279,13 +1332,22 @@ int main(int argc, char* argv[])
                       for (j = 0; j < lowerRowNum; j++) {
                           basisInverseRow.add(j, contRestBasisInverseRows[i*lowerRowNum + j]);
                       }
-                      contRestBasisInverseRowLcm[i] = (int) dlcmRational(basisInverseRow.values(), lowerRowNum);
+                      contRestBasisInverseRowLcm[i] = dlcmRational(basisInverseRow.values(), lowerRowNum);
                   }
                   for (i = 0; i < lowerRowNum; i++) {
                       contRestBasisInverseRow[i] = new double[lowerRowNum];
                       solver->getBInvRow(i, contRestBasisInverseRow[i]);
                   }
                   solver->getBasics(contRestBasisIndices);
+                  //Changing contRestBasisIndices to reflect slack/surplus variables based on output from SoPlex
+                  //We get the indices as "numcols -1 + rownum" in case of a basic row
+                  //    ==> the slack variables corresponding to that row is a basic col
+                  //        ==> we can mark our already introduced slack col as basic
+                  for (i = 0; i < lowerRowNum; i++) {
+                      if (contRestBasisIndices[i] >= contRestColNum) {
+                          contRestBasisIndices[i] = contRestBasisIndices[i] - contRestColNum + lowerContColNum;
+                      }
+                  }
                   //Building non-basic part of opt. sol. by zeroing basic part
                   memcpy(contRestBestSolutionNonBasics, contRestBestSolution, sizeof(double)*contRestColNum);
                   for (i = 0; i < lowerRowNum; i++) {
@@ -1335,6 +1397,13 @@ int main(int argc, char* argv[])
 
               // Updating value function exact value
               if (!subproblemInfeasible) {
+                  subproblemObjVal = 0;
+                  for (i = 0; i < subproblemColNum; i++) {
+                      if (subproblemColType[i] == 'I' || subproblemColType[i] == 'B') {
+                          subproblemBestSolution[i] = round(subproblemBestSolution[i]);
+                      }
+                      subproblemObjVal += subproblemBestSolution[i] * subproblemObjCoef[i];
+                  }
                   bilevelVFExactValue = subproblemObjVal;
               }
 
@@ -1345,6 +1414,19 @@ int main(int argc, char* argv[])
                       leafDualByRow, leafPosDjByRow, leafNegDjByRow,
                       &leafLbCnt, &leafLbInd, &leafLbVal,
                       &leafUbCnt, &leafUbInd, &leafUbVal);
+              //Changing sign of leafDualByRow w.r.t. orig. subproblem's row sense
+              //    since SYMPHONY changes all rows internally to 'L' sense
+              //FIXME: Note that there are no 'E' rows in our MIBLPs as of now.
+              for (i = 0; i < subproblemRowNum; i++) {
+                  if (subproblemRowSense[i] == 'G') {
+                      for (j = 0; j < leafNodeNum; j++) {
+                          double element = leafDualByRow->getCoefficient(j, i);
+                          if (element) {
+                              leafDualByRow->modifyCoefficient(j, i, -element, false);
+                          }
+                      }
+                  }
+              }
 
               delete solver;
 
@@ -1700,18 +1782,93 @@ int main(int argc, char* argv[])
               numBinColsForDomainRest = 0;
               //FIXME: combine the code of all for loops of the following kind
               if (!level2Infeasible) {
+                  CoinZeroN(tol, 2*lowerRowNum);
                   for (i = 0; i < lowerRowNum; i++) {
                       int ind = contRestBasisIndices[i];
                       if (ind < lowerContColNum) {
                           if (lowerContColFiniteLbId[ind]) {
+                              //Finding "tol"
+                              //Setting data matrices and vectors
+                              memcpy(tolProbObjCoef, product4[i], sizeof(double)*upperColNum);
+                              tolProbRowLb[0] = -product5[i] - contRestBasisInverseRowLcm[i]*contRestColLb[ind] + 1;
+                              for (j = 0; j < upperColNum; j++) {
+                                  tolProbMat->modifyCoefficient(0, j, product4[i][j]);
+                              }
+                              //Actual solving
+                              solver = getSolver(tolProbSolver, tolProbMaxThreads, false);
+                              tolProbInfeasible = solve(solver,
+                                      tolProbColNum, tolProbObjCoef, tolProbObjSense,
+                                      tolProbColLb, tolProbColUb, tolProbColType,
+                                      tolProbMat, tolProbRowLb, tolProbRowUb,
+                                      &tolProbObjVal, tolProbBestSolution);
+                              if (tolProbInfeasible) {
+                                  //1 is some random value
+                                  tol[numBinColsForDomainRest] = 1.0;
+                              } else {
+                                  assert(solver->isProvenOptimal());
+                                  double tolTemp = fabs(-product5[i] - contRestBasisInverseRowLcm[i]*contRestColLb[ind] - tolProbObjVal);
+                                  assert(tolTemp > etol); // not equal to zero
+                                  tol[numBinColsForDomainRest] = round(tolTemp);
+                              }
+                              delete solver;
+
                               //Counting # of binary variables for domain rest.
                               numBinColsForDomainRest++;
                           }
                           if (lowerContColFiniteUbId[ind]) {
+                              //Finding "tol"
+                              //Setting data matrices and vectors
+                              tolProbRowLb[0] = product5[i] + contRestBasisInverseRowLcm[i]*contRestColUb[ind] + 1;
+                              for (j = 0; j < upperColNum; j++) {
+                                  tolProbObjCoef[j] = -product4[i][j];
+                                  tolProbMat->modifyCoefficient(0, j, -product4[i][j]);
+                              }
+                              //Actual solving
+                              solver = getSolver(tolProbSolver, tolProbMaxThreads, false);
+                              tolProbInfeasible = solve(solver,
+                                      tolProbColNum, tolProbObjCoef, tolProbObjSense,
+                                      tolProbColLb, tolProbColUb, tolProbColType,
+                                      tolProbMat, tolProbRowLb, tolProbRowUb,
+                                      &tolProbObjVal, tolProbBestSolution);
+                              if (tolProbInfeasible) {
+                                  //1 is some random value
+                                  tol[numBinColsForDomainRest] = 1.0;
+                              } else {
+                                  assert(solver->isProvenOptimal());
+                                  double tolTemp = fabs(product5[i] + contRestBasisInverseRowLcm[i]*contRestColUb[ind] - tolProbObjVal);
+                                  assert(tolTemp > etol); // not equal to zero
+                                  tol[numBinColsForDomainRest] = round(tolTemp);
+                              }
+                              delete solver;
+
                               //Counting # of binary variables for domain rest.
                               numBinColsForDomainRest++;
                           }
                       } else {
+                          //Setting data matrices and vectors
+                          memcpy(tolProbObjCoef, product4[i], sizeof(double)*upperColNum);
+                          tolProbRowLb[0] = -product5[i] + 1;
+                          for (j = 0; j < upperColNum; j++) {
+                              tolProbMat->modifyCoefficient(0, j, product4[i][j]);
+                          }
+                          //Actual solving
+                          solver = getSolver(tolProbSolver, tolProbMaxThreads, false);
+                          tolProbInfeasible = solve(solver,
+                                  tolProbColNum, tolProbObjCoef, tolProbObjSense,
+                                  tolProbColLb, tolProbColUb, tolProbColType,
+                                  tolProbMat, tolProbRowLb, tolProbRowUb,
+                                  &tolProbObjVal, tolProbBestSolution);
+                          if (tolProbInfeasible) {
+                              //1 is some random value
+                              tol[numBinColsForDomainRest] = 1;
+                          } else {
+                              assert(solver->isProvenOptimal());
+                              double tolTemp = fabs(-product5[i] - tolProbObjVal);
+                              assert(tolTemp > etol); // not equal to zero
+                              tol[numBinColsForDomainRest] = round(tolTemp);
+                          }
+                          delete solver;
+
                           //Counting # of binary variables for domain rest.
                           numBinColsForDomainRest++;
                       }
@@ -1781,37 +1938,49 @@ int main(int argc, char* argv[])
                       if (ind < lowerContColNum) {
                           if (lowerContColFiniteLbId[ind]) {
                               //Note: 10 is a random multiplier
-                              double bigMForDomainRest = 10*fabs(-product5[i] - product10[i] - minValForDomainRest[i] -
+                              double bigMForDomainRest = (-product5[i] - product10[i] - minValForDomainRest[i] -
                                       contRestBasisInverseRowLcm[i]*contRestColLb[ind]);
+                              // Offset bigM by epsilon (= tol[counterTemp])
+                              bigMForDomainRest += tol[counterTemp];
+                              /*
                               if (bigMForDomainRest <= etol) {
                                   // bigM = 0; 10 is a random number!
                                   bigMForDomainRest = 10;
                               }
+                              */
                               masterRowUbVec.resize((masterRowNum + feasibleLeafNodeNum + 1 + numBinColsForDomainRest +
                                           (counterTemp+1)), (bigMForDomainRest + product5[i] + product10[i] +
-                                              contRestBasisInverseRowLcm[i]*contRestColLb[ind] - 1));
+                                              contRestBasisInverseRowLcm[i]*contRestColLb[ind] - tol[counterTemp]));
                               counterTemp++;
                           }
                           if (lowerContColFiniteUbId[ind]) {
-                              double bigMForDomainRest = 10*fabs(product5[i] + product10[i] + maxValForDomainRest[i] +
+                              double bigMForDomainRest = (product5[i] + product10[i] + maxValForDomainRest[i] +
                                       contRestBasisInverseRowLcm[i]*contRestColUb[ind]);
+                              // Offset bigM by epsilon (= tol[counterTemp])
+                              bigMForDomainRest += tol[counterTemp];
+                              /*
                               if (bigMForDomainRest <= etol) {
                                   // bigM = 0; 10 is a random number!
                                   bigMForDomainRest = 10;
                               }
+                              */
                               masterRowUbVec.resize((masterRowNum + feasibleLeafNodeNum + 1 + numBinColsForDomainRest +
                                           (counterTemp+1)), (bigMForDomainRest - product5[i] - product10[i] -
-                                              contRestBasisInverseRowLcm[i]*contRestColUb[ind] - 1));
+                                              contRestBasisInverseRowLcm[i]*contRestColUb[ind] - tol[counterTemp]));
                               counterTemp++;
                           }
                       } else {
-                          double bigMForDomainRest = 10*fabs(-product5[i] - product10[i] - minValForDomainRest[i]);
+                          double bigMForDomainRest = (-product5[i] - product10[i] - minValForDomainRest[i]);
+                          // Offset bigM by epsilon (= tol[counterTemp])
+                          bigMForDomainRest += tol[counterTemp];
+                          /*
                           if (bigMForDomainRest <= etol) {
                               // bigM = 0; 10 is a random number!
                               bigMForDomainRest = 10;
                           }
+                          */
                           masterRowUbVec.resize((masterRowNum + feasibleLeafNodeNum + 1 + numBinColsForDomainRest +
-                                      (counterTemp+1)), (bigMForDomainRest + product5[i] + product10[i] - 1));
+                                      (counterTemp+1)), (bigMForDomainRest + product5[i] + product10[i] - tol[counterTemp]));
                           counterTemp++;
                       }
                   }
@@ -1871,7 +2040,13 @@ int main(int argc, char* argv[])
                       }
                       row.insert(upperColNum, 1);
                       row.insert((masterColNum + i), -singleBigMForLbf);
-                      row.insert((masterColNum + feasibleLeafNodeNum), -bigMForUbf*fullDualOfExtraRow[feasibleLeafNodeInd[i]]);
+                      if (fullDualOfExtraRow[feasibleLeafNodeInd[i]] >= -etol) {
+                          //dual value = 0 (since we know it is <= 0 to begin with)
+                          //   so, following is equivalent to dual = -1 to still have effect to bigMForUbf
+                          row.insert((masterColNum + feasibleLeafNodeNum), bigMForUbf);
+                      } else {
+                          row.insert((masterColNum + feasibleLeafNodeNum), -bigMForUbf*fullDualOfExtraRow[feasibleLeafNodeInd[i]]);
+                      }
                       masterMat.appendRow(row);
                   }
                   CoinPackedVector oneMoreRow;
@@ -1888,12 +2063,12 @@ int main(int argc, char* argv[])
                                   contRestBasisInverseRowLcm[i]*contRestColLb[ind];
                               //Note: 10 is a random multiplier
                               if (bigMForDomainRest > etol) {
-                                  bigMForDomainRest = -10*bigMForDomainRest;
+//                                  bigMForDomainRest = -10*bigMForDomainRest;
                               } else if (bigMForDomainRest < etol) {
-                                  bigMForDomainRest = 10*bigMForDomainRest;
+//                                  bigMForDomainRest = 10*bigMForDomainRest;
                               } else {
-                                  // bigM = 0; -10 is a random number!
-                                  bigMForDomainRest = -10;
+                                  // bigM = 0; 1 is a random positive number to not let v_i = 1 to occur!
+                                  bigMForDomainRest = 1;
                               }
                               CoinPackedVector row;
                               for (j = 0; j < upperColNum; j++) {
@@ -1907,12 +2082,12 @@ int main(int argc, char* argv[])
                               double bigMForDomainRest = product5[i] + product10[i] + minValForDomainRest[i] +
                                   contRestBasisInverseRowLcm[i]*contRestColUb[ind];
                               if (bigMForDomainRest > etol) {
-                                  bigMForDomainRest = -10*bigMForDomainRest;
+//                                  bigMForDomainRest = -10*bigMForDomainRest;
                               } else if (bigMForDomainRest < etol) {
-                                  bigMForDomainRest = 10*bigMForDomainRest;
+//                                  bigMForDomainRest = 10*bigMForDomainRest;
                               } else {
-                                  // bigM = 0; -10 is a random number!
-                                  bigMForDomainRest = -10;
+                                  // bigM = 0; 1 is a random positive number to not let v_i = 1 to occur!
+                                  bigMForDomainRest = 1;
                               }
                               CoinPackedVector row;
                               for (j = 0; j < upperColNum; j++) {
@@ -1925,12 +2100,12 @@ int main(int argc, char* argv[])
                       } else {
                           double bigMForDomainRest = -product5[i] - product10[i] - maxValForDomainRest[i];
                           if (bigMForDomainRest > etol) {
-                              bigMForDomainRest = -10*bigMForDomainRest;
+//                              bigMForDomainRest = -10*bigMForDomainRest;
                           } else if (bigMForDomainRest < etol) {
-                              bigMForDomainRest = 10*bigMForDomainRest;
+//                              bigMForDomainRest = 10*bigMForDomainRest;
                           } else {
-                              // bigM = 0; -10 is a random number!
-                              bigMForDomainRest = -10;
+                              // bigM = 0; 1 is a random positive number to not let v_i = 1 to occur!
+                              bigMForDomainRest = 1;
                           }
                           CoinPackedVector row;
                           for (j = 0; j < upperColNum; j++) {
@@ -1948,12 +2123,16 @@ int main(int argc, char* argv[])
                       if (ind < lowerContColNum) {
                           if (lowerContColFiniteLbId[ind]) {
                               //Note: 10 is a random multiplier
-                              double bigMForDomainRest = 10*fabs(-product5[i] - product10[i] - minValForDomainRest[i] -
+                              double bigMForDomainRest = (-product5[i] - product10[i] - minValForDomainRest[i] -
                                       contRestBasisInverseRowLcm[i]*contRestColLb[ind]);
+                              // Offset bigM by epsilon (= 1)
+                              bigMForDomainRest += 1;
+                              /*
                               if (bigMForDomainRest <= etol) {
                                   // bigM = 0; 10 is a random number!
                                   bigMForDomainRest = 10;
                               }
+                              */
                               CoinPackedVector row;
                               for (j = 0; j < upperColNum; j++) {
                                   row.insert(j, -product4[i][j]);
@@ -1963,12 +2142,16 @@ int main(int argc, char* argv[])
                               counterTemp++;
                           }
                           if (lowerContColFiniteUbId[ind]) {
-                              double bigMForDomainRest = 10*fabs(product5[i] + product10[i] + maxValForDomainRest[i] +
+                              double bigMForDomainRest = (product5[i] + product10[i] + maxValForDomainRest[i] +
                                       contRestBasisInverseRowLcm[i]*contRestColUb[ind]);
+                              // Offset bigM by epsilon (= 1)
+                              bigMForDomainRest += 1;
+                              /*
                               if (bigMForDomainRest <= etol) {
                                   // bigM = 0; 10 is a random number!
                                   bigMForDomainRest = 10;
                               }
+                              */
                               CoinPackedVector row;
                               for (j = 0; j < upperColNum; j++) {
                                   row.insert(j, product4[i][j]);
@@ -1978,11 +2161,15 @@ int main(int argc, char* argv[])
                               counterTemp++;
                           }
                       } else {
-                          double bigMForDomainRest = 10*fabs(-product5[i] - product10[i] - minValForDomainRest[i]);
+                          double bigMForDomainRest = (-product5[i] - product10[i] - minValForDomainRest[i]);
+                          // Offset bigM by epsilon (= 1)
+                          bigMForDomainRest += 1;
+                          /*
                           if (bigMForDomainRest <= etol) {
                               // bigM = 0; 10 is a random number!
                               bigMForDomainRest = 10;
                           }
+                          */
                           CoinPackedVector row;
                           for (j = 0; j < upperColNum; j++) {
                               row.insert(j, -product4[i][j]);
@@ -2043,6 +2230,10 @@ int main(int argc, char* argv[])
 
               /** Setting and solving the master problem **/
               masterBestSolution = new double[masterColNum];
+              bool tempBool = false;
+              if (tempBool) {
+                  solver->writeLp("tempBoolLp");
+              }
               solver = getSolver(masterProblemSolver, masterMaxThreads, false);
               masterInfeasible = solve(solver,
                       masterColNum, masterObjCoef, upperObjSense,
@@ -2051,11 +2242,13 @@ int main(int argc, char* argv[])
                       &masterObjVal, masterBestSolution);
               delete solver;
 
-              //Rounding integer variables
-              for (i = 0; i < upperColNum; i++) {
-                  if (colType[i] == 'I' || colType[i] == 'B') {
+              //Rounding integer variables and reevaluating master obj. value
+              masterObjVal = 0;
+              for (i = 0; i < masterColNum; i++) {
+                  if (masterColType[i] == 'I' || masterColType[i] == 'B') {
                       masterBestSolution[i] = round(masterBestSolution[i]);
                   }
+                  masterObjVal += masterBestSolution[i]*masterObjCoef[i];
               }
 
               //This checks the infinite loop condition which should never happen
@@ -2198,6 +2391,7 @@ int main(int argc, char* argv[])
       delete [] contRestBasisInverseRow;
       delete [] contRestDjSolution;
       delete [] contRestDualSolution;
+      delete [] contRestBestSolutionNonBasics;
       delete [] contRestBestSolution;
       delete [] contRestRowUb;
       delete [] contRestRowLb;
