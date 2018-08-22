@@ -753,56 +753,64 @@ int main(int argc, char* argv[])
       }
       double boundImprObjVal = 0;
       double *boundImprBestSolution = new double[upperColNum + lowerColNum];
-      for (i = 0; i < (upperColNum + lowerColNum); i++) {
-          //Setting objective function of only one variable
-          boundImprObjCoef[i] = 1.0;
-          if (i) {
-              boundImprObjCoef[i-1] = 0.0;
+      int counter;
+      //Performing bound improvement preprocessing two times
+      for (counter = 0; counter < 2; counter++) {
+          for (i = 0; i < (upperColNum + lowerColNum); i++) {
+              //Setting objective function of only one variable
+              boundImprObjCoef[i] = 1.0;
+              if (i) {
+                  boundImprObjCoef[i-1] = 0.0;
+              }
+
+              //Solving minimization problem
+              boundImprSolver = getSolver(boundImprProbSolver, boundImprMaxThreads, false);
+              boundImprInfeasible = solve(boundImprSolver,
+                      (upperColNum + lowerColNum), boundImprObjCoef, boundImprObjSense[0],
+                      origColLb, origColUb, boundImprColType,
+                      &rowCoefMatrixByCol, rowLb, rowUb,
+                      &boundImprObjVal, boundImprBestSolution);
+              if (boundImprSolver->isProvenOptimal()) {
+                  if (boundImprObjVal >= origColLb[i] + etol) {
+                      if ((colType[i] == 'B') || (colType[i] == 'I')) {
+                          origColLb[i] = ceil(boundImprObjVal);
+                      } else {
+                          origColLb[i] = boundImprObjVal;
+                      }
+                  }
+              } else {
+                  throw CoinError("Bound improvement problem is not solved to optimality.",
+                          "main",
+                          "MibSMain");
+              };
+              delete boundImprSolver;
+
+              //Solving maximization problem
+              boundImprSolver = getSolver(boundImprProbSolver, boundImprMaxThreads, false);
+              boundImprInfeasible = solve(boundImprSolver,
+                      (upperColNum + lowerColNum), boundImprObjCoef, boundImprObjSense[1],
+                      origColLb, origColUb, boundImprColType,
+                      &rowCoefMatrixByCol, rowLb, rowUb,
+                      &boundImprObjVal, boundImprBestSolution);
+              if (boundImprSolver->isProvenOptimal()) {
+                  if (boundImprObjVal <= origColUb[i] - etol) {
+                      if ((colType[i] == 'B') || (colType[i] == 'I')) {
+                          origColUb[i] = floor(boundImprObjVal);
+                      } else {
+                          //NOTE: Technically, following 'ceil' is not required.
+                          //  Since these bounds are useful in tolProb later for
+                          //    finding epsilon values where all integer coefficients
+                          //    are assumed, we are ceiling these bounds here.
+                          origColUb[i] = ceil(boundImprObjVal);
+                      }
+                  }
+              } else {
+                  throw CoinError("Bound improvement problem is not solved to optimality.",
+                          "main",
+                          "MibSMain");
+              };
+              delete boundImprSolver;
           }
-
-          //Solving minimization problem
-          boundImprSolver = getSolver(boundImprProbSolver, boundImprMaxThreads, false);
-          boundImprInfeasible = solve(boundImprSolver,
-                  (upperColNum + lowerColNum), boundImprObjCoef, boundImprObjSense[0],
-                  origColLb, origColUb, boundImprColType,
-                  &rowCoefMatrixByCol, rowLb, rowUb,
-                  &boundImprObjVal, boundImprBestSolution);
-          if (boundImprSolver->isProvenOptimal()) {
-              if (boundImprObjVal >= origColLb[i] + etol) {
-                  if ((colType[i] == 'B') || (colType[i] == 'I')) {
-                      origColLb[i] = ceil(boundImprObjVal);
-                  } else {
-                      origColLb[i] = boundImprObjVal;
-                  }
-              }
-          } else {
-              throw CoinError("Bound improvement problem is not solved to optimality.",
-                      "main",
-                      "MibSMain");
-          };
-          delete boundImprSolver;
-
-          //Solving maximization problem
-          boundImprSolver = getSolver(boundImprProbSolver, boundImprMaxThreads, false);
-          boundImprInfeasible = solve(boundImprSolver,
-                  (upperColNum + lowerColNum), boundImprObjCoef, boundImprObjSense[1],
-                  origColLb, origColUb, boundImprColType,
-                  &rowCoefMatrixByCol, rowLb, rowUb,
-                  &boundImprObjVal, boundImprBestSolution);
-          if (boundImprSolver->isProvenOptimal()) {
-              if (boundImprObjVal <= origColUb[i] - etol) {
-                  if ((colType[i] == 'B') || (colType[i] == 'I')) {
-                      origColUb[i] = floor(boundImprObjVal);
-                  } else {
-                      origColUb[i] = boundImprObjVal;
-                  }
-              }
-          } else {
-              throw CoinError("Bound improvement problem is not solved to optimality.",
-                      "main",
-                      "MibSMain");
-          };
-          delete boundImprSolver;
       }
       delete [] boundImprBestSolution;
       delete [] boundImprColType;
@@ -1763,6 +1771,13 @@ int main(int argc, char* argv[])
                       }
                   }
 
+                  //Asserting equality of 2nd level objective value and its various components
+                  double oneComponent = 0.0;
+                  for (i = 0; i < upperColNum; i++) {
+                      oneComponent += product2[i]*masterBestSolutionUpperCols[i];
+                  }
+                  assert(fabs(product6 - oneComponent - product3 + level2IntObjVal + product8 - level2ObjVal) <= etol);
+
                   //Product of cont. rest. non-basic part of matrix and non-basic variables
                   CoinZeroN(product9, lowerRowNum);
                   contRestMat.times(contRestBestSolutionNonBasics, product9);
@@ -1876,10 +1891,11 @@ int main(int argc, char* argv[])
                               //Finding "tol"
                               //Setting data matrices and vectors
                               memcpy(tolProbObjCoef, product4[i], sizeof(double)*upperColNum);
-                              tolProbRowLb[0] = -product5[i] - contRestBasisInverseRowLcm[i]*contRestColLb[ind] + 1;
+                              tolProbRowLb[0] = -product5[i] - product10[i] - contRestBasisInverseRowLcm[i]*contRestColLb[ind] + 1;
                               for (j = 0; j < upperColNum; j++) {
                                   tolProbMat->modifyCoefficient(0, j, product4[i][j]);
                               }
+                              tolProbObjVal = 0.0;
                               //Actual solving
                               solver = getSolver(tolProbSolver, tolProbMaxThreads, false);
                               tolProbInfeasible = solve(solver,
@@ -1892,9 +1908,12 @@ int main(int argc, char* argv[])
                                   tol[numBinColsForDomainRest] = 1.0;
                               } else {
                                   assert(solver->isProvenOptimal());
-                                  double tolTemp = fabs(-product5[i] - contRestBasisInverseRowLcm[i]*contRestColLb[ind] - tolProbObjVal);
+                                  double tolTemp = fabs(-product5[i] - product10[i]
+                                          - contRestBasisInverseRowLcm[i]*contRestColLb[ind] - tolProbObjVal);
                                   assert(tolTemp > etol); // not equal to zero
-                                  tol[numBinColsForDomainRest] = round(tolTemp);
+                                  //FIXME: 'floor' is used according to 'tol' usage
+                                  //  later in the algo. Check again if 'ceil' is reqd.
+                                  tol[numBinColsForDomainRest] = floor(tolTemp);
                               }
                               delete solver;
 
@@ -1904,11 +1923,12 @@ int main(int argc, char* argv[])
                           if (lowerContColFiniteUbId[ind]) {
                               //Finding "tol"
                               //Setting data matrices and vectors
-                              tolProbRowLb[0] = product5[i] + contRestBasisInverseRowLcm[i]*contRestColUb[ind] + 1;
+                              tolProbRowLb[0] = product5[i] + product10[i] + contRestBasisInverseRowLcm[i]*contRestColUb[ind] + 1;
                               for (j = 0; j < upperColNum; j++) {
                                   tolProbObjCoef[j] = -product4[i][j];
                                   tolProbMat->modifyCoefficient(0, j, -product4[i][j]);
                               }
+                              tolProbObjVal = 0.0;
                               //Actual solving
                               solver = getSolver(tolProbSolver, tolProbMaxThreads, false);
                               tolProbInfeasible = solve(solver,
@@ -1921,9 +1941,12 @@ int main(int argc, char* argv[])
                                   tol[numBinColsForDomainRest] = 1.0;
                               } else {
                                   assert(solver->isProvenOptimal());
-                                  double tolTemp = fabs(product5[i] + contRestBasisInverseRowLcm[i]*contRestColUb[ind] - tolProbObjVal);
+                                  double tolTemp = fabs(product5[i] + product10[i]
+                                          + contRestBasisInverseRowLcm[i]*contRestColUb[ind] - tolProbObjVal);
                                   assert(tolTemp > etol); // not equal to zero
-                                  tol[numBinColsForDomainRest] = round(tolTemp);
+                                  //FIXME: 'floor' is used according to 'tol' usage
+                                  //  later in the algo. Check again if 'ceil' is reqd.
+                                  tol[numBinColsForDomainRest] = floor(tolTemp);
                               }
                               delete solver;
 
@@ -1933,10 +1956,11 @@ int main(int argc, char* argv[])
                       } else {
                           //Setting data matrices and vectors
                           memcpy(tolProbObjCoef, product4[i], sizeof(double)*upperColNum);
-                          tolProbRowLb[0] = -product5[i] + 1;
+                          tolProbRowLb[0] = -product5[i] - product10[i] + 1;
                           for (j = 0; j < upperColNum; j++) {
                               tolProbMat->modifyCoefficient(0, j, product4[i][j]);
                           }
+                          tolProbObjVal = 0.0;
                           //Actual solving
                           solver = getSolver(tolProbSolver, tolProbMaxThreads, false);
                           tolProbInfeasible = solve(solver,
@@ -1949,9 +1973,11 @@ int main(int argc, char* argv[])
                               tol[numBinColsForDomainRest] = 1;
                           } else {
                               assert(solver->isProvenOptimal());
-                              double tolTemp = fabs(-product5[i] - tolProbObjVal);
+                              double tolTemp = fabs(-product5[i] - product10[i] - tolProbObjVal);
                               assert(tolTemp > etol); // not equal to zero
-                              tol[numBinColsForDomainRest] = round(tolTemp);
+                              //FIXME: 'floor' is used according to 'tol' usage
+                              //  later in the algo. Check again if 'ceil' is reqd.
+                              tol[numBinColsForDomainRest] = floor(tolTemp);
                           }
                           delete solver;
 
