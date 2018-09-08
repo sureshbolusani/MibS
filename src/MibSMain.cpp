@@ -104,6 +104,10 @@ OsiSolverInterface* getSolver(std::string problemSolver, int maxThreads,
         assert(cpxEnv);
         CPXsetintparam(cpxEnv, CPX_PARAM_THREADS, maxThreads);
 
+        double ztol = 1e-12;
+        CPXsetdblparam(cpxEnv, CPX_PARAM_EPINT, ztol);
+        //std::cout << "\nCPLEX integrality tolerance = " << ztol << std::endl << std::endl;
+
         solver->setHintParam(OsiDoReducePrint, true, OsiHintDo);
 #else
         throw CoinError("CPLEX chosen as solver but it has not been enabled",
