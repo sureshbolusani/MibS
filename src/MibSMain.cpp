@@ -260,7 +260,7 @@ void getDualData(OsiSolverInterface *solver, double boundOnBigM,
         }
         objVal = solver->getObjValue();
         if (solver->isProvenOptimal()) {
-            bigM = objVal;
+            bigM = 1.2*objVal;
 
             //Update bigM further based on max of subproblem's objective function
             if (bigM >= boundOnBigM + etol) {
@@ -749,7 +749,6 @@ int main(int argc, char* argv[])
       boundImprObjSense[0] = 1.0;
       boundImprObjSense[1] = -1.0;
       double *boundImprObjCoef = new double[upperColNum + lowerColNum];
-      CoinZeroN(boundImprObjCoef, (upperColNum + lowerColNum));
       char *boundImprColType = new char[upperColNum + lowerColNum];
       int i;
       for (i = 0; i < (upperColNum + lowerColNum); i++) {
@@ -760,6 +759,7 @@ int main(int argc, char* argv[])
       int counter;
       //Performing bound improvement preprocessing two times
       for (counter = 0; counter < 2; counter++) {
+          CoinZeroN(boundImprObjCoef, (upperColNum + lowerColNum));
           for (i = 0; i < (upperColNum + lowerColNum); i++) {
               //Setting objective function of only one variable
               boundImprObjCoef[i] = 1.0;
@@ -1279,6 +1279,7 @@ int main(int argc, char* argv[])
       int tolProbMaxThreads = 1;
 
       //Misc declarations
+      int tempCounter = 0;
       bool termFlag = false, timeUp = false;
       int iterCounter = 0;
       double bilevelVFExactValue = infinity, boundOnLbf, dualBoundOnLevel2 = 0;
@@ -1317,11 +1318,57 @@ int main(int argc, char* argv[])
           assert(masterColLb[i] > -infinity);
           assert(masterColUb[i] < infinity);
       }
+      /*
+      //Known optimal solution ("upperColNum + 1" where 1 corresponds to risk function approximation)
+      double *optSol = new double[upperColNum];
+      optSol[0] = 1;
+      optSol[1] = 0;
+      optSol[2] = 0;
+      optSol[3] = 0;
+      optSol[4] = 1;
+      optSol[5] = 1;
+      optSol[6] = 0;
+      optSol[7] = 0;
+      optSol[8] = 0;
+      optSol[9] = 1;
+//      optSol[10] = 2852.5;
+*/
 
 
 
       /*** while loop for decomposition algorithm ***/
       while (!termFlag) {
+          /*
+          if (iterCounter >= 1) {
+              // Checking if the known optimal solution is already cut off from master problem
+              // Note: This is for debugging purposes only.
+              // Setting and solving the master problem
+              masterBestSolution = new double[masterColNum];
+              double masterObjValCopy = 0.0;
+              double *masterColLbCopy = new double[masterColNum];
+              double *masterColUbCopy = new double[masterColNum];
+              memcpy(masterColLbCopy, masterColLb, sizeof(double)*masterColNum);
+              memcpy(masterColUbCopy, masterColUb, sizeof(double)*masterColNum);
+              memcpy(masterColLbCopy, optSol, sizeof(double)*(upperColNum));
+              memcpy(masterColUbCopy, optSol, sizeof(double)*(upperColNum));
+              solver = getSolver(masterProblemSolver, masterMaxThreads, false);
+              masterInfeasible = solve(solver,
+                      masterColNum, masterObjCoef, upperObjSense,
+                      masterColLbCopy, masterColUbCopy, masterColType,
+                      &masterMat, masterRowLb, masterRowUb,
+                      &masterObjValCopy, masterBestSolution);
+              std::cout << "********" << std::endl;
+              std::cout << masterBestSolution[10] << "  " << 2836.33333333 << std::endl;
+              std::cout << "********" << std::endl;
+              assert((masterBestSolution[10] - 2836.333333333) <= etol);
+              delete solver;
+              delete [] masterColUbCopy;
+              delete [] masterColLbCopy;
+              delete [] masterBestSolution;
+          }
+          */
+
+
           /** Setting up the subproblem in MILP form using master problem's solution **/
           if (!masterInfeasible) {
               //Setting subproblem Row LB, UB, RHS for the given masterBestSolution!
@@ -1547,7 +1594,7 @@ int main(int argc, char* argv[])
           //FIXME: are the criteria correct?
           clock_t current = clock();
           double timeTillNow = (double) (current - begin) / CLOCKS_PER_SEC;
-          timeUp = ((timeTillNow >= 7200) ? true : false);
+          timeUp = ((timeTillNow >= 14400) ? true : false);
           if (masterInfeasible || (!subproblemInfeasible &&
                   (fabs(bilevelVFExactValue - bilevelVFApproxValue) <= etol))
                   || timeUp) {
@@ -2241,8 +2288,8 @@ int main(int argc, char* argv[])
                               //Note: 10 is a random multiplier
                               double bigMForDomainRest = (-product5[i] - product10[i] - minValForDomainRest[i] -
                                       contRestBasisInverseRowLcm[i]*contRestColLb[ind]);
-                              // Offset bigM by epsilon (= 1)
-                              bigMForDomainRest += 1;
+                              // Offset bigM by epsilon (= tol[counterTemp])
+                              bigMForDomainRest += tol[counterTemp];
                               /*
                               if (bigMForDomainRest <= etol) {
                                   // bigM = 0; 10 is a random number!
@@ -2260,8 +2307,8 @@ int main(int argc, char* argv[])
                           if (lowerContColFiniteUbId[ind]) {
                               double bigMForDomainRest = (product5[i] + product10[i] + maxValForDomainRest[i] +
                                       contRestBasisInverseRowLcm[i]*contRestColUb[ind]);
-                              // Offset bigM by epsilon (= 1)
-                              bigMForDomainRest += 1;
+                              // Offset bigM by epsilon (= tol[counterTemp])
+                              bigMForDomainRest += tol[counterTemp];
                               /*
                               if (bigMForDomainRest <= etol) {
                                   // bigM = 0; 10 is a random number!
@@ -2278,8 +2325,8 @@ int main(int argc, char* argv[])
                           }
                       } else {
                           double bigMForDomainRest = (-product5[i] - product10[i] - minValForDomainRest[i]);
-                          // Offset bigM by epsilon (= 1)
-                          bigMForDomainRest += 1;
+                          // Offset bigM by epsilon (= tol[counterTemp])
+                          bigMForDomainRest += tol[counterTemp];
                           /*
                           if (bigMForDomainRest <= etol) {
                               // bigM = 0; 10 is a random number!
@@ -2372,7 +2419,11 @@ int main(int argc, char* argv[])
                   }
                   if (i == upperColNum) {
                       //NOTE: instead of modifying master problem, we are simply exiting for the time being
-                      termFlag = true;
+                      tempCounter++;
+                      if (tempCounter == 4) {
+                          termFlag = true;
+                      }
+//                      termFlag = true;
                       std::cout << "Algoirthm exited because we are about to enter an infinite loop!\n" << std::endl;
                   }
               }
