@@ -260,7 +260,8 @@ void getDualData(OsiSolverInterface *solver, double boundOnBigM,
         }
         objVal = solver->getObjValue();
         if (solver->isProvenOptimal()) {
-            bigM = 1.2*objVal;
+            //Note: 2 is a random multiplier since we need a multiplier > 1
+            bigM = 2*objVal;
 
             //Update bigM further based on max of subproblem's objective function
             if (bigM >= boundOnBigM + etol) {
@@ -516,7 +517,7 @@ void getDualData(OsiSolverInterface *solver, double boundOnBigM,
                 }
                 //Now, both the minor and major dimensions are large enough
                 for (j = 0; j < numRows; j++) {
-                    dual->modifyCoefficient(i, j, correctFullDual[j], false);
+                    dual->modifyCoefficient(i, j, correctFullDual[j], true);
                 }
 
                 //Expand posDj matrix if required
@@ -612,21 +613,21 @@ void getDualData(OsiSolverInterface *solver, double boundOnBigM,
                         djVal = correctFullDual[finiteColUbId[j]];
                     }
                     if (djVal > etol) {
-                        posDj->modifyCoefficient(i, j, djVal, false);
+                        posDj->modifyCoefficient(i, j, djVal, true);
                         if ((i < negDjMajorDim) && (j < negDjMinorDim)) {
-                            negDj->modifyCoefficient(i, j, 0, false);
+                            negDj->modifyCoefficient(i, j, 0, true);
                         }
                     } else if (djVal < -etol) {
-                        negDj->modifyCoefficient(i, j, djVal, false);
+                        negDj->modifyCoefficient(i, j, djVal, true);
                         if ((i < posDjMajorDim) && (j < posDjMinorDim)) {
-                            posDj->modifyCoefficient(i, j, 0, false);
+                            posDj->modifyCoefficient(i, j, 0, true);
                         }
                     } else {
                         if ((i < negDjMajorDim) && (j < negDjMinorDim)) {
-                            negDj->modifyCoefficient(i, j, 0, false);
+                            negDj->modifyCoefficient(i, j, 0, true);
                         }
                         if ((i < posDjMajorDim) && (j < posDjMinorDim)) {
-                            posDj->modifyCoefficient(i, j, 0, false);
+                            posDj->modifyCoefficient(i, j, 0, true);
                         }
                     }
                 }
@@ -1042,7 +1043,7 @@ int main(int argc, char* argv[])
       //FIXME: Have this as a user input parameter!
       std::string masterProblemSolver = "CPLEX";
       double *masterBestSolution;
-      double masterObjVal, optObjVal = 0;
+      double masterObjVal, masterObjValPrevIter = 0, optObjVal = 0;
       double *masterBestSolutionUpperCols = new double[upperColNum];
 
       //Column and row related data
@@ -1307,31 +1308,36 @@ int main(int argc, char* argv[])
               dualBoundOnLevel2 += coef2*ub;
           }
       }
-      //Value of boundOnLbf: 10 is a random multiplier
+      //Value of boundOnLbf: 2 is a random multiplier
       if (fabs(primalBoundOnSubproblem) >= fabs(dualBoundOnSubproblem)) {
-          boundOnLbf = 10*fabs(primalBoundOnSubproblem);
+          boundOnLbf = 2*fabs(primalBoundOnSubproblem);
       } else {
-          boundOnLbf = 10*fabs(dualBoundOnSubproblem);
+          boundOnLbf = 2*fabs(dualBoundOnSubproblem);
       }
       //Also assert that upper level col bounds are finite!
       for (i = 0; i < upperColNum; i++) {
           assert(masterColLb[i] > -infinity);
           assert(masterColUb[i] < infinity);
       }
+      //Best solution found so far
+      int currentBestIteration = -1;
+      double currentBestObjVal = infinity;
+      double *currentBestSolution = new double[upperColNum + lowerColNum];
+      CoinZeroN(currentBestSolution, upperColNum + lowerColNum);
       /*
-      //Known optimal solution ("upperColNum + 1" where 1 corresponds to risk function approximation)
+      //Known solution
       double *optSol = new double[upperColNum];
       optSol[0] = 1;
       optSol[1] = 0;
-      optSol[2] = 0;
-      optSol[3] = 0;
+      optSol[2] = 1;
+      optSol[3] = 1;
       optSol[4] = 1;
       optSol[5] = 1;
-      optSol[6] = 0;
-      optSol[7] = 0;
+      optSol[6] = 1;
+      optSol[7] = 1;
       optSol[8] = 0;
-      optSol[9] = 1;
-//      optSol[10] = 2852.5;
+      optSol[9] = 0;
+//      optSol[10] = -5620.75;
 */
 
 
@@ -1340,7 +1346,7 @@ int main(int argc, char* argv[])
       while (!termFlag) {
           /*
           if (iterCounter >= 1) {
-              // Checking if the known optimal solution is already cut off from master problem
+              // Checking if the known solution is already cut off from master problem
               // Note: This is for debugging purposes only.
               // Setting and solving the master problem
               masterBestSolution = new double[masterColNum];
@@ -1358,9 +1364,10 @@ int main(int argc, char* argv[])
                       &masterMat, masterRowLb, masterRowUb,
                       &masterObjValCopy, masterBestSolution);
               std::cout << "********" << std::endl;
-              std::cout << masterBestSolution[10] << "  " << 2836.33333333 << std::endl;
+              std::cout << masterBestSolution[10] << "  " << -5620.75 << std::endl;
+              std::cout << masterObjValCopy << std::endl;
               std::cout << "********" << std::endl;
-              assert((masterBestSolution[10] - 2836.333333333) <= etol);
+              assert((masterBestSolution[10] + 5620.75) <= etol);
               delete solver;
               delete [] masterColUbCopy;
               delete [] masterColLbCopy;
@@ -1567,7 +1574,7 @@ int main(int argc, char* argv[])
                       for (j = 0; j < leafNodeNum; j++) {
                           double element = leafDualByRow->getCoefficient(j, i);
                           if (element) {
-                              leafDualByRow->modifyCoefficient(j, i, -element, false);
+                              leafDualByRow->modifyCoefficient(j, i, -element, true);
                           }
                       }
                   }
@@ -1586,6 +1593,14 @@ int main(int argc, char* argv[])
                   for (i = 0; i < lowerColNum; i++) {
                       optObjVal += subproblemObjCoef[i]*subproblemBestSolution[i];
                   }
+              }
+
+              /* Updating best solution found so far */
+              if (currentBestObjVal >= optObjVal + etol) {
+                  currentBestIteration = iterCounter;
+                  currentBestObjVal = optObjVal;
+                  memcpy(currentBestSolution, masterBestSolutionUpperCols, sizeof(double)*upperColNum);
+                  memcpy(&currentBestSolution[upperColNum], subproblemBestSolution, sizeof(double)*lowerColNum);
               }
           }
 
@@ -1844,16 +1859,21 @@ int main(int argc, char* argv[])
 
                   //bigM for UBF of level2 problem
                   double maxVal = 0;
+                  double minVal = 0;
                   for (i = 0; i < upperColNum; i++) {
                       double coef = product2[i];
                       if (coef < -etol) {
                           maxVal += coef*masterColLb[i];
+                          minVal += coef*masterColUb[i];
                       } else if (coef > etol) {
                           maxVal += coef*masterColUb[i];
+                          minVal += coef*masterColLb[i];
                       }
                   }
                   double ubfMin = product6 - product3 + level2IntObjVal + product8 - maxVal;
-                  bigMForUbf = fabs(dualBoundOnLevel2) + fabs(ubfMin);
+                  double ubfMax = product6 - product3 + level2IntObjVal + product8 - minVal;
+//                  bigMForUbf = fabs(dualBoundOnLevel2) + fabs(ubfMin);
+                  bigMForUbf = fabs(dualBoundOnLevel2 - ubfMax);
 
                   //bigM for LBF of subproblem
                   singleBigMForLbf = 0;
@@ -1944,7 +1964,7 @@ int main(int argc, char* argv[])
                               memcpy(tolProbObjCoef, product4[i], sizeof(double)*upperColNum);
                               tolProbRowLb[0] = -product5[i] - product10[i] - contRestBasisInverseRowLcm[i]*contRestColLb[ind] + 1;
                               for (j = 0; j < upperColNum; j++) {
-                                  tolProbMat->modifyCoefficient(0, j, product4[i][j]);
+                                  tolProbMat->modifyCoefficient(0, j, product4[i][j], true);
                               }
                               tolProbObjVal = 0.0;
                               //Actual solving
@@ -1977,7 +1997,7 @@ int main(int argc, char* argv[])
                               tolProbRowLb[0] = product5[i] + product10[i] + contRestBasisInverseRowLcm[i]*contRestColUb[ind] + 1;
                               for (j = 0; j < upperColNum; j++) {
                                   tolProbObjCoef[j] = -product4[i][j];
-                                  tolProbMat->modifyCoefficient(0, j, -product4[i][j]);
+                                  tolProbMat->modifyCoefficient(0, j, -product4[i][j], true);
                               }
                               tolProbObjVal = 0.0;
                               //Actual solving
@@ -2009,7 +2029,7 @@ int main(int argc, char* argv[])
                           memcpy(tolProbObjCoef, product4[i], sizeof(double)*upperColNum);
                           tolProbRowLb[0] = -product5[i] - product10[i] + 1;
                           for (j = 0; j < upperColNum; j++) {
-                              tolProbMat->modifyCoefficient(0, j, product4[i][j]);
+                              tolProbMat->modifyCoefficient(0, j, product4[i][j], true);
                           }
                           tolProbObjVal = 0.0;
                           //Actual solving
@@ -2100,7 +2120,6 @@ int main(int argc, char* argv[])
                       int ind = contRestBasisIndices[i];
                       if (ind < lowerContColNum) {
                           if (lowerContColFiniteLbId[ind]) {
-                              //Note: 10 is a random multiplier
                               double bigMForDomainRest = (-product5[i] - product10[i] - minValForDomainRest[i] -
                                       contRestBasisInverseRowLcm[i]*contRestColLb[ind]);
                               // Offset bigM by epsilon (= tol[counterTemp])
@@ -2285,7 +2304,6 @@ int main(int argc, char* argv[])
                       int ind = contRestBasisIndices[i];
                       if (ind < lowerContColNum) {
                           if (lowerContColFiniteLbId[ind]) {
-                              //Note: 10 is a random multiplier
                               double bigMForDomainRest = (-product5[i] - product10[i] - minValForDomainRest[i] -
                                       contRestBasisInverseRowLcm[i]*contRestColLb[ind]);
                               // Offset bigM by epsilon (= tol[counterTemp])
@@ -2390,6 +2408,9 @@ int main(int argc, char* argv[])
                   bilevelVFApproxValue  << ", Master ObjVal = " << masterObjVal << std::endl;
               std::cout << std::endl;
 
+              //Storing current iteration's master obj. val.
+              masterObjValPrevIter = masterObjVal;
+
 
               /** Setting and solving the master problem **/
               masterBestSolution = new double[masterColNum];
@@ -2409,6 +2430,13 @@ int main(int argc, char* argv[])
                   }
                   masterObjVal += masterBestSolution[i]*masterObjCoef[i];
               }
+              if (iterCounter >= 1) {
+                  std::cout << "********" << std::endl;
+                  std::cout << masterObjValPrevIter << "  " << masterObjVal << std::endl;
+                  std::cout << "********" << std::endl;
+                  assert(masterObjVal >= masterObjValPrevIter - etol);
+              }
+              
 
               //This checks the infinite loop condition which should never happen
               if (fabs(masterBestSolution[upperColNum] - bilevelVFApproxValue) <= etol) {
@@ -2509,6 +2537,19 @@ int main(int argc, char* argv[])
                   std::cout << "Master problem found infeasible!" << std::endl;
               } else if (timeUp) {
                   std::cout << "\nTime limit exceeded!" << std::endl;
+                  std::cout << "Current Best Objective Value = " << currentBestObjVal << std::endl;
+                  std::cout << " ... found in iteration-" << currentBestIteration << std::endl;
+                  std::cout << "Current Best Solution:" << std::endl;
+                  for (i = 0; i < upperColNum; i++) {
+                      if (fabs(currentBestSolution[i]) > etol) {
+                          std::cout << "    x[" << i << "] = " << currentBestSolution[i] << std::endl;
+                      }
+                  }
+                  for (i = 0; i < lowerColNum; i++) {
+                      if (fabs(currentBestSolution[upperColNum + i]) > etol) {
+                          std::cout << "    y[" << i << "] = " << currentBestSolution[upperColNum + i] << std::endl;
+                      }
+                  }
               } else {
                   std::cout << "Error: unknown exit criterion triggered!" << std::endl;
               }
@@ -2545,6 +2586,7 @@ int main(int argc, char* argv[])
 //      delete [] lowerObjCoef;
 //      delete [] lowerColInd;
 //      delete [] feasibleLeafNodeInd;
+      delete [] currentBestSolution;
       delete [] minValForDomainRest;
       delete [] maxValForDomainRest;
 //      delete [] linkingColId;
