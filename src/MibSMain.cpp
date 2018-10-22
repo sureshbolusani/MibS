@@ -780,7 +780,10 @@ int main(int argc, char* argv[])
                       if ((colType[i] == 'B') || (colType[i] == 'I')) {
                           origColLb[i] = ceil(boundImprObjVal);
                       } else {
-                          origColLb[i] = boundImprObjVal;
+                          //NOTE: Technically, following 'floor' is not required.
+                          //  Since these bounds are useful in product9 later,
+                          //    we are flooring these bounds here.
+                          origColLb[i] = floor(boundImprObjVal);
                       }
                   }
               } else {
@@ -822,16 +825,6 @@ int main(int argc, char* argv[])
       delete [] boundImprObjCoef;
       delete [] boundImprObjSense;
 
-      /*
-      //Making upper bounds finite wherever required
-      //FIXME: Find a workaround for following 1500.
-      int i;
-      for (i = 0; i < (upperColNum + lowerColNum); i++) {
-          if (origColUb[i] >= 1500) {
-              origColUb[i] = 1500;
-          }
-      }
-      */
 
       //FIXME: Make "z >= LBF" con. in master prob. robust to account for upperObjSense
       //    i.e., fix the "UBF + infty" or "UBF - infty" variation
@@ -1799,6 +1792,7 @@ int main(int argc, char* argv[])
                       for (j = 0; j < upperColNum; j++) {
                           //Multiplying product4[i] with i-th row's LCM
                           product4[i][j] *= contRestBasisInverseRowLcm[i];
+                          product4[i][j] = round(product4[i][j]);
                           double coef = product4[i][j];
                           if (coef < -etol) {
                               maxValForDomainRest[i] += coef*masterColLb[j];
@@ -1819,6 +1813,7 @@ int main(int argc, char* argv[])
                           product5[i] += contRestBasisInverseRowLcm[i]*contRestBasisInverseRow[i][j]*
                               (level2IntColRowActivity[j] - lowerRowRhs[j]);
                       }
+                      product5[i] = round(product5[i]);
                   }
 
                   //Product of dual of cont. rest. and lowerRowRhs
@@ -1847,6 +1842,9 @@ int main(int argc, char* argv[])
                   //Product of cont. rest. non-basic part of matrix and non-basic variables
                   CoinZeroN(product9, lowerRowNum);
                   contRestMat.times(contRestBestSolutionNonBasics, product9);
+                  for (i = 0; i < lowerRowNum; i++) {
+                      product9[i] = round(product9[i]);
+                  }
 
                   //Product of cont. rest. basis inverse and product9
                   for (i = 0; i < lowerRowNum; i++) {
@@ -1855,6 +1853,7 @@ int main(int argc, char* argv[])
                           product10[i] += contRestBasisInverseRowLcm[i]*contRestBasisInverseRow[i][j]*
                               product9[j];
                       }
+                      product10[i] = round(product10[i]);
                   }
 
                   //bigM for UBF of level2 problem
@@ -1984,6 +1983,7 @@ int main(int argc, char* argv[])
                                   assert(tolTemp > etol); // not equal to zero
                                   //FIXME: 'floor' is used according to 'tol' usage
                                   //  later in the algo. Check again if 'ceil' is reqd.
+                                  std::cout << tolTemp << "\t" << floor(tolTemp) << "\t" << ceil(tolTemp) << "\t" << round(tolTemp) << std::endl;
                                   tol[numBinColsForDomainRest] = floor(tolTemp);
                               }
                               delete solver;
@@ -2017,6 +2017,7 @@ int main(int argc, char* argv[])
                                   assert(tolTemp > etol); // not equal to zero
                                   //FIXME: 'floor' is used according to 'tol' usage
                                   //  later in the algo. Check again if 'ceil' is reqd.
+                                  std::cout << tolTemp << "\t" << floor(tolTemp) << "\t" << ceil(tolTemp) << "\t" << round(tolTemp) << std::endl;
                                   tol[numBinColsForDomainRest] = floor(tolTemp);
                               }
                               delete solver;
@@ -2048,6 +2049,7 @@ int main(int argc, char* argv[])
                               assert(tolTemp > etol); // not equal to zero
                               //FIXME: 'floor' is used according to 'tol' usage
                               //  later in the algo. Check again if 'ceil' is reqd.
+                              std::cout << tolTemp << "\t" << floor(tolTemp) << "\t" << ceil(tolTemp) << "\t" << round(tolTemp) << std::endl;
                               tol[numBinColsForDomainRest] = floor(tolTemp);
                           }
                           delete solver;
@@ -2431,9 +2433,11 @@ int main(int argc, char* argv[])
                   masterObjVal += masterBestSolution[i]*masterObjCoef[i];
               }
               if (iterCounter >= 1) {
+                  /*
                   std::cout << "********" << std::endl;
                   std::cout << masterObjValPrevIter << "  " << masterObjVal << std::endl;
                   std::cout << "********" << std::endl;
+                  */
                   assert(masterObjVal >= masterObjValPrevIter - etol);
               }
               
