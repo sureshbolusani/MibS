@@ -1,14 +1,13 @@
-# MibS (Mixed Integer Bilevel Solver) 0.95
+# MibS (Mixed Integer Bilevel Solver) 1.1
 
 ## Build Status
 
-[![Build Status](https://travis-ci.org/tkralphs/MibS.svg?branch=master)](https://travis-ci.org/tkralphs/MibS)
+[![Build Status](https://travis-ci.org/coin-or/MibS.svg?branch=master)](https://travis-ci.org/coin-or/MibS)
 
-[![Build status](https://ci.appveyor.com/api/projects/status/fa7egaj3n4kcq101/branch/master?svg=true)](https://ci.appveyor.com/project/tkralphs/mibs/branch/master)
-
+[![Build status](https://ci.appveyor.com/api/projects/status/aqxs9wcp2tjgpffd?svg=true)](https://ci.appveyor.com/project/tkralphs/mibs/branch/master)
 ## Download
 
-[ ![Download](https://api.bintray.com/packages/coin-or/download/MibS/images/download.svg?version=0.9) ](https://bintray.com/coin-or/download/MibS/0.9/link)
+[ ![Download](https://api.bintray.com/packages/coin-or/download/MibS/images/download.svg?version=1.0.0) ](https://bintray.com/coin-or/download/MibS/1.0.0/link)
 
 Binary packages are available for some platforms from [Bintray](https://bintray.com/coin-or/download/MibS).
 
@@ -60,8 +59,8 @@ git clone https://github.com/coin-or-tools/BuildTools/
 and then execute
 
 ```
-BuildTools/get.dependencies fetch
-BuildTools/get.dependencies build --quiet
+BuildTools/get.dependencies.sh fetch
+BuildTools/get.dependencies.sh build --quiet
 ```
 
 This will build all required dependencies and MibS itself. Afterwards, the
@@ -70,7 +69,7 @@ in the directory `MibS/build/lib`. If you wish to install in a different
 directory, such as `/usr/local`, then run the command
 
 ```
-BuildTools/get.dependencies install --prefix=/path/to/install/dir
+BuildTools/get.dependencies.sh install --prefix=/path/to/install/dir
 ```
 
 After installation, you will also need to add `/your/install/dir/bin` to your
@@ -114,8 +113,8 @@ git clone https://github.com/coin-or-tools/BuildTools/
 and then execute
 
 ```
-BuildTools/get.dependencies fetch
-BuildTools/get.dependencies build --quiet
+BuildTools/get.dependencies.sh fetch
+BuildTools/get.dependencies.sh build --quiet
 ```
 
 This will build all required dependencies and MibS itself. Afterwards, the
@@ -124,7 +123,7 @@ in the directory `MibS/build/lib`. If you wish to install in a different
 directory, such /c/Program\ Files\ \(x86\)/MibS, then run the command
 
 ```
-BuildTools/get.dependencies install --prefix=/path/to/install/dir
+BuildTools/get.dependencies.sh install --prefix=/path/to/install/dir
 ```
 
  7. To use the resulting binaries and/or libraries, you will need to add the
@@ -144,7 +143,7 @@ free). Then follow all the steps above, but replace the `build` command
 with
 
 ```
-BuildTools/get.dependencies build --quiet --enable-msvc 
+BuildTools/get.dependencies.sh build --quiet --enable-msvc 
 ```
 
 ### Building on OS X
@@ -176,8 +175,8 @@ git clone https://github.com/coin-or-tools/BuildTools/
 and then execute
 
 ```
-BuildTools/get.dependencies fetch
-BuildTools/get.dependencies build --quiet
+BuildTools/get.dependencies.sh fetch
+BuildTools/get.dependencies.sh build --quiet
 ```
 
 This will build all required dependencies and MibS itself. Afterwards, the
@@ -192,14 +191,14 @@ If you want to use the `gcc` compiler provided by Homebrew, then replace the
 `build` command above with
 
 ```
-BuildTools/get.dependencies build --quiet CC=gcc-5 CXX=g++-5
+BuildTools/get.dependencies.sh build --quiet CC=gcc-5 CXX=g++-5
 ```
 
 If you wish to install in a different
 directory, such as `/usr/local`, then run the command
 
 ```
-BuildTools/get.dependencies install --prefix=/path/to/install/dir
+BuildTools/get.dependencies.sh install --prefix=/path/to/install/dir
 ```
 
 After installation, you will also need to add `/your/install/dir/bin` to your
@@ -210,17 +209,21 @@ to your `DYLD_LIBRARY_PATH` if you want to link to COIN libraries.
 
 To solve a bilevel program, you must provide both an MPS file and an auxiliary
 information file that specifies which variables and constraints are associated
-with the each level. Then call `mibs` like this:
+with the each level (see [here](http://coral.ise.lehigh.edu/wp-content/uploads/2016/02/MibS_inputFile.pdf)). Then call `mibs` like this:
 ```
 <build_or_install_dir>/bin/mibs -Alps_instance file.mps -MibS_auxiliaryInfoFile aux_file.txt
 ```
 It is also possible to specify additional settings in a parameter file with,
 e.g., 
 ```
-<build_or_install_dir>/bin/mibs -param <build_or_install_dir>/src/mibs.par
+<build_or_install_dir>/bin/mibs -param <build_or_install_dir>/MibS/src/mibs.par
 ```
 MibS has many parameters. See the example parameter file `mibs.par` and
-the header file `MibParam.h` for explanations.
+the header file `MibParam.h` for explanations. You can also find a detailed
+description of MibS
+[here](http://www.optimization-online.org/DB_FILE/2017/04/5977.pdf).
+Furthermore, to conduct the experiments illustrated in this report, see
+the `README` file in the directory `scripts`.     
 
 HELP
 
@@ -237,6 +240,6 @@ MibS was developed with support from
 Laboratories" funded by the German Federal Ministry of Education and Research
 (BMBF Grant 05M14ZAM) and by the DFG SFB/Transregio 154
 
-http://github.com/tkralphs/MibS
+http://github.com/coin-or/MibS
 
 Enjoy!

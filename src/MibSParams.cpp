@@ -57,6 +57,12 @@ MibSParams::createKeywordList() {
    keys_.push_back(make_pair(std::string("MibS_turnOffOtherCuts"),
 			     AlpsParameter(AlpsBoolPar, turnOffOtherCuts)));
 
+   keys_.push_back(make_pair(std::string("MibS_printProblemInfo"),
+			     AlpsParameter(AlpsBoolPar, printProblemInfo)));
+
+   keys_.push_back(make_pair(std::string("MibS_allowRemoveCut"),
+			     AlpsParameter(AlpsBoolPar, allowRemoveCut)));
+
    //--------------------------------------------------------
    // BoolArrayPar
    //--------------------------------------------------------
@@ -136,11 +142,17 @@ MibSParams::createKeywordList() {
    keys_.push_back(make_pair(std::string("MibS_useBendersCut"),
 			     AlpsParameter(AlpsIntPar, useBendersCut)));
 
+   keys_.push_back(make_pair(std::string("MibS_bendersCutType"),
+			     AlpsParameter(AlpsIntPar, bendersCutType)));
+
    keys_.push_back(make_pair(std::string("MibS_useIntersectionCut"),
                              AlpsParameter(AlpsIntPar, useIntersectionCut)));
 
    keys_.push_back(make_pair(std::string("MibS_intersectionCutType"),
 			     AlpsParameter(AlpsIntPar, intersectionCutType)));
+
+   keys_.push_back(make_pair(std::string("MibS_bilevelFreeSetTypeIC"),
+			     AlpsParameter(AlpsIntPar, bilevelFreeSetTypeIC)));
 
    //solve lower-level Parameters
    keys_.push_back(make_pair(std::string("MibS_solveSecondLevelWhenXYVarsInt"),
@@ -178,6 +190,9 @@ MibSParams::createKeywordList() {
    keys_.push_back(make_pair(std::string("MibS_feasCheckSolver"),
 			     AlpsParameter(AlpsStringPar, feasCheckSolver)));
 
+   keys_.push_back(make_pair(std::string("MibS_inputFormat"),
+			     AlpsParameter(AlpsStringPar, inputFormat)));
+
 }
 
 //#############################################################################
@@ -206,6 +221,10 @@ MibSParams::setDefaultEntries() {
    setEntry(doDualFixing, false);
 
    setEntry(turnOffOtherCuts, false);
+
+   setEntry(printProblemInfo, true);
+
+   setEntry(allowRemoveCut, false);
 
    //-------------------------------------------------------------
    // Int Parameters.
@@ -257,9 +276,13 @@ MibSParams::setDefaultEntries() {
 
    setEntry(useBendersCut, PARAM_NOTSET);
 
+   setEntry(bendersCutType, MibSBendersCutTypeJustOneCut);
+
    setEntry(useIntersectionCut, PARAM_NOTSET);
 
-   setEntry(intersectionCutType, PARAM_NOTSET);
+   setEntry(intersectionCutType, MibSIntersectionCutTypeNotSet);
+
+   setEntry(bilevelFreeSetTypeIC, MibSBilevelFreeSetTypeICNotSet);
 
    setEntry(solveSecondLevelWhenXYVarsInt, PARAM_NOTSET);
 
@@ -289,6 +312,7 @@ MibSParams::setDefaultEntries() {
 
    setEntry(feasCheckSolver, "SYMPHONY");
 
+   setEntry(inputFormat, "indexBased");
 }
 
 //#############################################################################
