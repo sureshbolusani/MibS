@@ -260,11 +260,17 @@ void getDualData(OsiSolverInterface *solver, double boundOnBigM,
         }
         objVal = solver->getObjValue();
         if (solver->isProvenOptimal()) {
-            //Note: 2 is a random multiplier since we need a multiplier > 1
-            bigM = 2*objVal;
+            //Note: 2 or 0.5 are random multipliers since we need bigM>objVal
+            if (objVal >= etol) {
+                bigM = 2*objVal;
+            } else {
+                bigM = 0.5*objVal;
+            }
+//            std::cout << bigM << "\t" << boundOnBigM << "\t" << objVal << std::endl;
 
             //Update bigM further based on max of subproblem's objective function
             if (bigM >= boundOnBigM + etol) {
+//                std::cout << "Updating bigM Again!" << std::endl;
                 bigM = boundOnBigM;
             }
         }
@@ -1038,6 +1044,7 @@ int main(int argc, char* argv[])
       double *masterBestSolution;
       double masterObjVal, masterObjValPrevIter = 0, optObjVal = 0;
       double *masterBestSolutionUpperCols = new double[upperColNum];
+      double *masterBestSolutionUpperColsPrevIter = new double[upperColNum];
 
       //Column and row related data
       std::vector<double> masterColLbVec;
@@ -1287,7 +1294,6 @@ int main(int argc, char* argv[])
           double ub = subproblemColUb[i];
           assert(ub < infinity);
           double coef1 = subproblemObjCoef[i];
-          double coef2 = lowerObjCoef[i];
           if (coef1 < -etol) {
               dualBoundOnSubproblem += coef1*lb;
               primalBoundOnSubproblem += coef1*ub;
@@ -1295,12 +1301,96 @@ int main(int argc, char* argv[])
               dualBoundOnSubproblem += coef1*ub;
               primalBoundOnSubproblem += coef1*lb;
           }
+          //Approach-1: Find dualBoundOnLevel2 w.r.t. simple box constraints on 'y'
+          double coef2 = lowerObjCoef[i];
           if (coef2 < -etol) {
               dualBoundOnLevel2 += coef2*lb;
           } else if (coef2 > etol) {
               dualBoundOnLevel2 += coef2*ub;
           }
       }
+      /*
+      std::cout << "\n \t Approach-1 val = " << dualBoundOnLevel2 << "\n";
+      //Approach-2: Find dualBoundOnLevel2 by solving a bilevel bounding problem
+      {
+          //Misc. parameters for bounding problem
+          std::string boundProbLpSolverName = "CPLEX";
+          int boundProbMaxThreads = 1;
+          CoinPackedMatrix boundProbMat(rowCoefMatrixByCol);
+          boundProbMat.deleteRows(upperRowNum, upperRowInd);
+          double *boundProbUpperObjCoef = new double[upperColNum + lowerColNum];
+          CoinZeroN(boundProbUpperObjCoef, upperColNum);
+          for (i = upperColNum; i < (upperColNum + lowerColNum); i++) {
+              boundProbUpperObjCoef[i] = -1.0 * lowerObjSense * lowerObjCoef[i - upperColNum];
+          }
+          double *boundProbRowLb = new double[lowerRowNum];
+          double *boundProbRowUb = new double[lowerRowNum];
+          memcpy(boundProbRowLb, &rowLb[upperRowNum], sizeof(double)*lowerRowNum);
+          memcpy(boundProbRowUb, &rowUb[upperRowNum], sizeof(double)*lowerRowNum);
+          char *boundProbRowSense = new char[lowerRowNum];
+          if (upperRowsHaveLowerCols) {
+              memcpy(boundProbRowSense, &subproblemRowSense[upperRowNum], sizeof(char)*lowerRowNum);
+          } else {
+              memcpy(boundProbRowSense, subproblemRowSense, sizeof(char)*lowerRowNum);
+          }
+          int *boundProbLowerRowInd = new int[lowerRowNum];
+          CoinIotaN(boundProbLowerRowInd, lowerRowNum, 0);
+          int boundProbArgc = 1;
+          char** boundProbArgv = new char* [1];
+          boundProbArgv[0] = (char *) "mibs";
+
+          //Setup an LP solver
+          OsiSolverInterface *boundProbLpSolver = getSolver(boundProbLpSolverName, boundProbMaxThreads, false);
+//          boundProbLpSolver->getModelPtr()->setDualBound(1.0e10);
+
+          //New MibS model
+          MibSModel *boundProbModel = new MibSModel();
+          boundProbModel->setSolver(boundProbLpSolver);
+//          boundProbModel->AlpsPar()->setEntry(AlpsParams::msgLevel, -1);
+//          boundProbModel->AlpsPar()->setEntry(AlpsParams::timeLimit, 100);
+
+          boundProbModel->loadAuxiliaryData(lowerColNum,
+                  lowerRowNum,
+                  lowerColInd,
+                  boundProbLowerRowInd,
+                  lowerObjSense,
+                  lowerObjCoef,
+                  upperColNum,
+                  0,
+                  upperColInd,
+                  NULL,
+                  0, NULL,
+                  0, NULL);
+
+          boundProbModel->loadProblemData(boundProbMat,
+                  origColLb, origColUb,
+                  boundProbUpperObjCoef,
+                  boundProbRowLb, boundProbRowUb,
+                  colType, 1.0, infinity,
+                  boundProbRowSense);
+
+#ifdef  COIN_HAS_MPI
+          AlpsKnowledgeBrokerMPI boundProbBroker(boundProbArgc, boundProbArgv, *boundProbModel);
+#else
+          AlpsKnowledgeBrokerSerial boundProbBroker(boundProbArgc, boundProbArgv, *boundProbModel);
+#endif
+
+          boundProbBroker.search(boundProbModel);
+          assert(boundProbBroker.getSolStatus() != AlpsExitStatusInfeasible);
+          double *boundProbSolution;
+          if (boundProbModel->getNumSolutions() > 0){
+              boundProbSolution = boundProbModel->incumbent();
+          }
+
+          dualBoundOnLevel2 = -1.0 * boundProbModel->getKnowledgeBroker()->getBestQuality();
+          assert(dualBoundOnLevel2 >= -etol);
+          if (boundProbBroker.getBestNode()) {
+              dualBoundOnLevel2 = -1.0 * boundProbBroker.getBestNode()->getQuality();
+              assert(dualBoundOnLevel2 >= -etol);
+          }
+          std::cout << "\n \t Approach-2 val = " << dualBoundOnLevel2 << "\n";
+      }
+    */
       //Value of boundOnLbf: 2 is a random multiplier
       if (fabs(primalBoundOnSubproblem) >= fabs(dualBoundOnSubproblem)) {
           boundOnLbf = 2*fabs(primalBoundOnSubproblem);
@@ -1322,16 +1412,26 @@ int main(int argc, char* argv[])
       double *optSol = new double[upperColNum];
       optSol[0] = 1;
       optSol[1] = 0;
-      optSol[2] = 1;
-      optSol[3] = 1;
+      optSol[2] = 0;
+      optSol[3] = 0;
       optSol[4] = 1;
       optSol[5] = 1;
-      optSol[6] = 1;
-      optSol[7] = 1;
+      optSol[6] = 0;
+      optSol[7] = 0;
       optSol[8] = 0;
-      optSol[9] = 0;
-//      optSol[10] = -5620.75;
-*/
+      optSol[9] = 1;
+//      optSol[0] = masterBestSolutionUpperColsPrevIter[0];
+//      optSol[1] = masterBestSolutionUpperColsPrevIter[1];
+//      optSol[2] = masterBestSolutionUpperColsPrevIter[2];
+//      optSol[3] = masterBestSolutionUpperColsPrevIter[3];
+//      optSol[4] = masterBestSolutionUpperColsPrevIter[4];
+//      optSol[5] = masterBestSolutionUpperColsPrevIter[5];
+//      optSol[6] = masterBestSolutionUpperColsPrevIter[6];
+//      optSol[7] = masterBestSolutionUpperColsPrevIter[7];
+//      optSol[8] = masterBestSolutionUpperColsPrevIter[8];
+//      optSol[9] = masterBestSolutionUpperColsPrevIter[9];
+      //      optSol[10] = -5620.75;
+      */
 
 
 
@@ -1357,10 +1457,9 @@ int main(int argc, char* argv[])
                       &masterMat, masterRowLb, masterRowUb,
                       &masterObjValCopy, masterBestSolution);
               std::cout << "********" << std::endl;
-              std::cout << masterBestSolution[10] << "  " << -5620.75 << std::endl;
-              std::cout << masterObjValCopy << std::endl;
+              std::cout << masterBestSolution[10] << "  " << 2836.33 << std::endl;
               std::cout << "********" << std::endl;
-              assert((masterBestSolution[10] + 5620.75) <= etol);
+              assert((masterBestSolution[10] - 2836.333333333333) <= etol);
               delete solver;
               delete [] masterColUbCopy;
               delete [] masterColLbCopy;
@@ -1603,7 +1702,7 @@ int main(int argc, char* argv[])
           clock_t current = clock();
           double timeTillNow = (double) (current - begin) / CLOCKS_PER_SEC;
           timeUp = ((timeTillNow >= 14400) ? true : false);
-          if (masterInfeasible || (!subproblemInfeasible &&
+          if (iterCounter >= 0 || masterInfeasible || (!subproblemInfeasible &&
                   (fabs(bilevelVFExactValue - bilevelVFApproxValue) <= etol))
                   || timeUp) {
               termFlag = true;
@@ -1871,8 +1970,16 @@ int main(int argc, char* argv[])
                   }
                   double ubfMin = product6 - product3 + level2IntObjVal + product8 - maxVal;
                   double ubfMax = product6 - product3 + level2IntObjVal + product8 - minVal;
-//                  bigMForUbf = fabs(dualBoundOnLevel2) + fabs(ubfMin);
+                  /*
+                  //Approach-1
+                  bigMForUbf = fabs(dualBoundOnLevel2) + fabs(ubfMin);
+                  */
+                  /*
+                  //Approach-2 (incorrect)
                   bigMForUbf = fabs(dualBoundOnLevel2 - ubfMax);
+                  */
+                  //Approach-3
+                  bigMForUbf = fabs(dualBoundOnLevel2 - ubfMin);
 
                   //bigM for LBF of subproblem
                   singleBigMForLbf = 0;
@@ -1902,10 +2009,17 @@ int main(int argc, char* argv[])
                                lbPosDjProduct[feasibleLeafNodeInd[i]] +
                                ubNegDjProduct[feasibleLeafNodeInd[i]] +
                                fullDualOfExtraRow[feasibleLeafNodeInd[i]]*(product6 - product3 + level2IntObjVal + product8);
-                      tempMax = fabs(bigMForLbf - minVal1 + maxVal2);
-                      tempMin = fabs(bigMForLbf - maxVal1 + minVal2);
+                      tempMax = (bigMForLbf - minVal1 + maxVal2);
+                      tempMin = (bigMForLbf - maxVal1 + minVal2);
+                      /*
+                      //Approach-1
                       //Note: 4 is a random multiplier
                       bigMForLbf = ((tempMax >= tempMin + etol) ? 4*tempMax : 4*tempMin);
+                      */
+                      //Approach-2: Difference between max and min values
+                      bigMForLbf = tempMax - tempMin;
+                      assert(bigMForLbf >= -etol);
+//                      std::cout << "\t\t bigMForLbf \t\t" << bigMForLbf << std::endl;
                       if ((bigMForLbf - singleBigMForLbf) > etol) {
                           singleBigMForLbf = bigMForLbf;
                       }
@@ -1978,12 +2092,18 @@ int main(int argc, char* argv[])
                                   tol[numBinColsForDomainRest] = 1.0;
                               } else {
                                   assert(solver->isProvenOptimal());
+                                  tolProbObjVal = 0;
+                                  for (j = 0; j < tolProbColNum; j++) {
+                                      //Following rounding if valid due to the known fact that all cols are binary
+                                      tolProbBestSolution[j] = round(tolProbBestSolution[j]);
+                                      tolProbObjVal += tolProbBestSolution[j]*tolProbObjCoef[j];
+                                  }
                                   double tolTemp = fabs(-product5[i] - product10[i]
                                           - contRestBasisInverseRowLcm[i]*contRestColLb[ind] - tolProbObjVal);
                                   assert(tolTemp > etol); // not equal to zero
                                   //FIXME: 'floor' is used according to 'tol' usage
                                   //  later in the algo. Check again if 'ceil' is reqd.
-                                  std::cout << tolTemp << "\t" << floor(tolTemp) << "\t" << ceil(tolTemp) << "\t" << round(tolTemp) << std::endl;
+//                                  std::cout << tolTemp << "\t" << floor(tolTemp) << "\t" << ceil(tolTemp) << "\t" << round(tolTemp) << std::endl;
                                   tol[numBinColsForDomainRest] = floor(tolTemp);
                               }
                               delete solver;
@@ -2012,12 +2132,18 @@ int main(int argc, char* argv[])
                                   tol[numBinColsForDomainRest] = 1.0;
                               } else {
                                   assert(solver->isProvenOptimal());
+                                  tolProbObjVal = 0;
+                                  for (j = 0; j < tolProbColNum; j++) {
+                                      //Following rounding if valid due to the known fact that all cols are binary
+                                      tolProbBestSolution[j] = round(tolProbBestSolution[j]);
+                                      tolProbObjVal += tolProbBestSolution[j]*tolProbObjCoef[j];
+                                  }
                                   double tolTemp = fabs(product5[i] + product10[i]
                                           + contRestBasisInverseRowLcm[i]*contRestColUb[ind] - tolProbObjVal);
                                   assert(tolTemp > etol); // not equal to zero
                                   //FIXME: 'floor' is used according to 'tol' usage
                                   //  later in the algo. Check again if 'ceil' is reqd.
-                                  std::cout << tolTemp << "\t" << floor(tolTemp) << "\t" << ceil(tolTemp) << "\t" << round(tolTemp) << std::endl;
+//                                  std::cout << tolTemp << "\t" << floor(tolTemp) << "\t" << ceil(tolTemp) << "\t" << round(tolTemp) << std::endl;
                                   tol[numBinColsForDomainRest] = floor(tolTemp);
                               }
                               delete solver;
@@ -2045,11 +2171,17 @@ int main(int argc, char* argv[])
                               tol[numBinColsForDomainRest] = 1;
                           } else {
                               assert(solver->isProvenOptimal());
+                              tolProbObjVal = 0;
+                              for (j = 0; j < tolProbColNum; j++) {
+                                  //Following rounding if valid due to the known fact that all cols are binary
+                                  tolProbBestSolution[j] = round(tolProbBestSolution[j]);
+                                  tolProbObjVal += tolProbBestSolution[j]*tolProbObjCoef[j];
+                              }
                               double tolTemp = fabs(-product5[i] - product10[i] - tolProbObjVal);
                               assert(tolTemp > etol); // not equal to zero
                               //FIXME: 'floor' is used according to 'tol' usage
                               //  later in the algo. Check again if 'ceil' is reqd.
-                              std::cout << tolTemp << "\t" << floor(tolTemp) << "\t" << ceil(tolTemp) << "\t" << round(tolTemp) << std::endl;
+//                              std::cout << tolTemp << "\t" << floor(tolTemp) << "\t" << ceil(tolTemp) << "\t" << round(tolTemp) << std::endl;
                               tol[numBinColsForDomainRest] = floor(tolTemp);
                           }
                           delete solver;
@@ -2410,8 +2542,9 @@ int main(int argc, char* argv[])
                   bilevelVFApproxValue  << ", Master ObjVal = " << masterObjVal << std::endl;
               std::cout << std::endl;
 
-              //Storing current iteration's master obj. val.
+              //Storing current iteration's data
               masterObjValPrevIter = masterObjVal;
+              memcpy(masterBestSolutionUpperColsPrevIter, masterBestSolutionUpperCols, sizeof(double)*upperColNum);
 
 
               /** Setting and solving the master problem **/
@@ -2452,7 +2585,7 @@ int main(int argc, char* argv[])
                   if (i == upperColNum) {
                       //NOTE: instead of modifying master problem, we are simply exiting for the time being
                       tempCounter++;
-                      if (tempCounter == 4) {
+                      if (tempCounter == 1) {
                           termFlag = true;
                       }
 //                      termFlag = true;
@@ -2612,6 +2745,7 @@ int main(int argc, char* argv[])
       delete [] level2RowLb;
       delete [] level2IntBestSolution;
       delete [] level2BestSolution;
+      delete [] masterBestSolutionUpperColsPrevIter;
       delete [] masterBestSolutionUpperCols;
       delete leafNegDjByRow;
       delete leafPosDjByRow;
