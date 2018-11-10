@@ -25,6 +25,7 @@
 #include "MibSParams.hpp"
 #include "MibSHelp.hpp"
 #include "MibSWarmStart.hpp"
+#include "MibSConstants.hpp"
 
 class MibSBilevel;
 class MibSCutGenerator;
@@ -103,6 +104,12 @@ private:
     /** Number of (UB) solved **/
     int counterUB_;
 
+    /** Time for solving (VF) **/
+    double timerVF_;
+
+    /** Time for solving (UB) **/
+    double timerUB_;
+
     /** Determines type of problem(general or interdiction) **/
     bool isInterdict_;
 
@@ -179,6 +186,12 @@ private:
 
     /** Original column upper bounds from Omega **/
     double * origColUb_;
+
+    /** Lower bounds for lower-level variables in lower-level problem **/
+    double * lColLbInLProb_;
+
+    /** Upper bounds for lower-level variables in lower-level problem **/
+    double * lColUbInLProb_;
   
     /** Original row lower bounds from Omega **/
     double * origRowLb_;
@@ -186,8 +199,28 @@ private:
     /** Original row upper bounds from Omega **/
     double * origRowUb_;
 
+    /** Original row sense **/
+    char * origRowSense_;
+    
+    /** Names of columns **/
+    std::string * columnName_;
+
+    /** Names of rows **/
+    std::string * rowName_;
+
     /** Original matrix of constraints coefficients **/
     CoinPackedMatrix *origConstCoefMatrix_;
+    
+    //we only fill next three matrices if they are required.
+    //For now, we only need them for generating IC and watermelon IC.
+    /** matrix of lower-level coefficients(all constraints are 'L') **/
+    CoinPackedMatrix *lowerConstCoefMatrix_;
+
+    /** matrix of upper-level vars in lower-level problem(all constraints are 'L') **/
+    CoinPackedMatrix *A2Matrix_;
+
+    /** matrix of lower-level vars in lower-level problem(all constraints are 'L') **/
+    CoinPackedMatrix *G2Matrix_;
 
     /** MibSBilevel object **/
     MibSBilevel *bS_;
@@ -306,8 +339,8 @@ public:
     void setStructRowInd(int *ptr) {structRowInd_ = ptr;} 
 
     /** Set pointer to array of LL objective coefficients **/
-    void setLowerObjCoeffs(double *ptr) {lowerObjCoeffs_ = ptr;} 
-
+    void setLowerObjCoeffs(double *ptr) {lowerObjCoeffs_ = ptr;}
+    
     /** Set objective sense of LL problem **/
     void setLowerObjSense(double os) {lowerObjSense_ = os;}
 
@@ -319,6 +352,21 @@ public:
   
     /** set the slopes of the lower-level value function **/
     void setValFuncSlopes();
+
+    /** Set pointer to lower bounds for lower-level variables in lower-level problem **/
+    void setLColLbInLProb(double *ptr) {lColLbInLProb_ = ptr;}
+
+    /** Set pointer to upper bounds for lower-level variables in lower-level problem **/
+    void setLColUbInLProb(double *ptr) {lColUbInLProb_ = ptr;}
+    
+    /** Set pointer to the matrix of LL coefficients(all constraints are 'L') **/
+    void setLowerConstCoefMatrix(CoinPackedMatrix *ptr) {lowerConstCoefMatrix_ = ptr;}
+
+    /** Set pointer to the matrix of UL vars in LL problem(all constraints are 'L') **/
+    void setA2Matrix(CoinPackedMatrix *ptr) {A2Matrix_ = ptr;}
+
+    /** Set pointer to the matrix of LL vars in LL problem(all constraints are 'L') **/
+    void setG2Matrix(CoinPackedMatrix *ptr) {G2Matrix_ = ptr;}
   
     /** Get the upper-level file **/
     std::string getUpperFile() {return ulDataFile_;}
@@ -408,8 +456,29 @@ public:
     /** Get pointer to the array of original row upper bounds **/
     double * getOrigRowUb() const {return origRowUb_;}
 
+    /** Get pointer to the array of original row sense **/
+    char * getOrigRowSense() const {return origRowSense_;}
+    
+    /** Get pointer to the original matrix of constraints coefficients **/
+    CoinPackedMatrix * getOrigConstCoefMatrix() const {return origConstCoefMatrix_;}
+
+    /** Get pointer to the matrix of LL coefficients(all constraints are 'L') **/
+    CoinPackedMatrix * getLowerConstCoefMatrix() const {return lowerConstCoefMatrix_;}
+
+    /** Get pointer to the matrix of UL vars in LL problem(all constraints are 'L') **/
+    CoinPackedMatrix * getA2Matrix() const {return A2Matrix_;}
+
+    /** Get pointer to the matrix of LL vars in LL problem(all constraints are 'L') **/
+    CoinPackedMatrix * getG2Matrix() const {return G2Matrix_;}
+
     /** Get pointer to the LL objective coefficient array **/
     double * getLowerObjCoeffs() {return lowerObjCoeffs_;}
+
+    /** Get pointer to the names of columns **/
+    std::string * getColumnName() {return columnName_;}
+
+    /** Get pointer to the names of rows **/
+    std::string * getRowName() {return rowName_;}
 
     /** Get pointer to the interdiction coefficient array **/
     double * getInterdictCost() {return interdictCost_;}
@@ -421,6 +490,12 @@ public:
     /** Get original constraint coefficient matrix **/
     CoinPackedMatrix * getOrigConstCoefMatrix() {return origConstCoefMatrix_;}
 
+    /** Get the lower bounds for lower-level variables in lower-level problem **/
+    double * getLColLbInLProb() {return lColLbInLProb_;}
+
+    /** Get the upper bounds for lower-level variables in lower-level problem **/
+    double * getLColUbInLProb() {return lColUbInLProb_;}
+
     /** Get the pointer to MibsBilevel **/
     inline MibSBilevel *getMibSBilevel() {return bS_;}
 
@@ -431,7 +506,7 @@ public:
     void setBlisParameters();
   
     /** Read auxiliary data file **/
-    void readAuxiliaryData();
+    void readAuxiliaryData(int numCols, int numRows);
 
     /** Set auxiliary data directly when using MibS as a library **/
     void loadAuxiliaryData(int lowerColNum, int lowerRowNum,
@@ -445,7 +520,9 @@ public:
 			   int structRowNum, 
 			   const int *structRowInd,
 			   double interdictBudget, 
-			   const double *interdictCost);
+			   const double *interdictCost,
+			   const double *lColLbInLProb,
+			   const double *lColUbInLProb);
 
     /** Read problem description file **/
     void readProblemData();
@@ -472,7 +549,7 @@ public:
     CoinPackedVector * getSolution();
 
     /** Calls MibSBilevel::createBilevel(CoinPackedVector *vec) **/
-    void createBilevel(CoinPackedVector *vec);
+    MibSSolType createBilevel(CoinPackedVector *vec);
     //void createBilevel(const double *vec);
 
     /** Print current solution **/

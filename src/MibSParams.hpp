@@ -36,6 +36,8 @@ class MibSParams : public AlpsParameterSet {
      warmStartLL,
      doDualFixing,
      turnOffOtherCuts,
+     printProblemInfo,
+     allowRemoveCut,
      endOfBoolParams
   };
   
@@ -64,8 +66,10 @@ class MibSParams : public AlpsParameterSet {
      useGeneralNoGoodCut,
      useIncObjCut,
      useBendersCut,
+     bendersCutType,
      useIntersectionCut,
      intersectionCutType,
+     bilevelFreeSetTypeIC,
      solveSecondLevelWhenXYVarsInt,
      solveSecondLevelWhenXVarsInt,
      solveSecondLevelWhenLVarsInt,
@@ -88,6 +92,7 @@ class MibSParams : public AlpsParameterSet {
       strDummy,
       auxiliaryInfoFile,
       feasCheckSolver,
+      inputFormat,
       endOfStrParams
   };
 

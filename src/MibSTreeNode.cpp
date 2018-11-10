@@ -363,10 +363,7 @@ MibSTreeNode::process(bool isRoot, bool rampUp)
             }
             getKnowledgeBroker()->tempTimer().start();
         }
-
-	if (1)
-	   model->solver()->writeLp("treenode");
-
+	
         lpStatus = static_cast<BlisLpStatus> (bound(model));
 
 	if (model->boundingPass_ == 1) {
@@ -412,10 +409,15 @@ MibSTreeNode::process(bool isRoot, bool rampUp)
 	  else{
 	      tailOffTol = BlisPar->entry(BlisParams::tailOff);
 	  }
+
+	  if((!ipSol) && (bS->shouldPrune_)){
+	      setStatus(AlpsNodeStatusFathomed);
+	      goto TERM_PROCESS;
+	  }
 	      
-	  if (ipSol) {         
-                // IP feasible
-                model->storeSolution(BlisSolutionTypeHeuristic, ipSol);
+	  if (ipSol) {
+		// IP feasible
+		model->storeSolution(BlisSolutionTypeHeuristic, ipSol);
 		//model->storeSolution(BlisSolutionTypeRounding, ipSol);
                 // Update cutoff
                 cutoff = model->getCutoff();
@@ -789,6 +791,13 @@ MibSTreeNode::process(bool isRoot, bool rampUp)
 					   MibSLPSolStatusInfeasible)) {
 		lpStatus = static_cast<BlisLpStatus> 
 		    (generateConstraints(model, newConPool));
+
+		if(bS->shouldPrune_){
+		    setStatus(AlpsNodeStatusFathomed);
+		    quality_ = -ALPS_OBJ_MAX;
+		    goto TERM_PROCESS;
+		}
+		    
             
 		if (lpStatus != BlisLpStatusOptimal) {
 		    setStatus(AlpsNodeStatusFathomed);

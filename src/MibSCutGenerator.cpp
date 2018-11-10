@@ -56,11 +56,15 @@ MibSCutGenerator::MibSCutGenerator(MibSModel *mibs)
   auxCount_ = 0;
   upper_ = 0.0;
   maximalCutCount_ = 0;
+  isBigMIncObjSet_ = false;
+  bigMIncObj_ = 0.0;
+  watermelonICSolver_ = 0;
 }
 
 //#############################################################################
 MibSCutGenerator::~MibSCutGenerator()
 {
+    if(watermelonICSolver_) delete watermelonICSolver_;
 
 }
 
@@ -70,6 +74,9 @@ MibSCutGenerator::bilevelFeasCut1(BcpsConstraintPool &conPool)
 {
 
   /** Add bilevel feasibility cut **/
+
+  bool allowRemoveCut(localModel_->MibSPar_->entry
+		      (MibSParams::allowRemoveCut));
 
   OsiSolverInterface * solver = localModel_->solver();
 
@@ -144,7 +151,7 @@ MibSCutGenerator::bilevelFeasCut1(BcpsConstraintPool &conPool)
 
   assert(indexList.size() == valsList.size());
 
-  numCuts += addCut(conPool, cutlb, cutub, indexList, valsList, true);
+  numCuts += addCut(conPool, cutlb, cutub, indexList, valsList, allowRemoveCut);
 
   delete [] binding;
   delete [] tempVals;
@@ -252,12 +259,18 @@ int
 MibSCutGenerator::intersectionCuts(BcpsConstraintPool &conPool,
 				   double *optLowerSolution)
 {
+    
+        MibSIntersectionCutType ICType = static_cast<MibSIntersectionCutType>
+	    (localModel_->MibSPar_->entry(MibSParams::intersectionCutType));
 
-        int ICType =
-	    localModel_->MibSPar_->entry(MibSParams::intersectionCutType);
+	MibSBilevelFreeSetTypeIC bilevelFreeSetType =
+	    static_cast<MibSBilevelFreeSetTypeIC>
+	    (localModel_->MibSPar_->entry(MibSParams::bilevelFreeSetTypeIC));
 	
 	int useLinkingSolutionPool(localModel_->MibSPar_->entry
 		       (MibSParams::useLinkingSolutionPool));
+
+	bool allowRemoveCut(localModel_->MibSPar_->entry(MibSParams::allowRemoveCut));
 
 	OsiSolverInterface * solver = localModel_->solver();
 
@@ -273,12 +286,14 @@ MibSCutGenerator::intersectionCuts(BcpsConstraintPool &conPool,
 	int numStruct, numArtf;
 	int i,j,index;
 	int numCuts(0);
+	bool intersectionFound(true);
 	
 	numStruct = ws->getNumStructural();
 	
 	numArtf = ws->getNumArtificial();
 	
 	double etol(localModel_->etol_);
+	double value(0.0);
 	int numBasicOrig(numArtf);
 	int numNonBasicOrig(numStruct);
 	int numBasic(0);
@@ -286,10 +301,24 @@ MibSCutGenerator::intersectionCuts(BcpsConstraintPool &conPool,
 	int newBasic(0);
 	int numCols(numStruct+numArtf);
 	int numRows(numArtf);
+	int lCols(localModel_->getLowerDim());
+	int lRows(localModel_->getLowerRowNum());
+
+	bool isTimeLimReached(false);
 
 	const double * colLb = solver->getColLower();
 	const double * colUb = solver->getColUpper();
-	
+
+	double *lpSol = new double[numStruct];
+	memcpy(lpSol, sol, sizeof(double) * numStruct);
+
+	for(i = 0; i < numStruct; i++){
+	    value = lpSol[i];
+	    if(fabs(floor(value + 0.5) - value) <= etol){
+		lpSol[i] = floor(value + 0.5);
+	    }
+	}
+		
 	int * rstat = new int[numArtf]();
 	int * cstat = new int[numStruct]();
 
@@ -471,315 +500,633 @@ MibSCutGenerator::intersectionCuts(BcpsConstraintPool &conPool,
 	    shouldFindBestSol = false;
 	}
 	switch(ICType){
-	case 1:
-	    getAlphaIntersectionCutType1(extRay, optLowerSolution, numStruct,
-					 numNonBasic, sol, alpha);
-	    break;
-	case 2://hypercube IC
-	    if(shouldFindBestSol == true){ 
-		storeBestSolIntersectionCutType2(sol, bS->objVal_);
-	    }
-	    getAlphaIntersectionCutType2(extRay, numStruct, numNonBasic,
-					 alpha);
-	    break;
-	case 3:
-	    if(shouldFindBestSol == true){
-		storeBestSolIntersectionCutType3(sol, bS->objVal_);
-	    }
-	    getAlphaIntersectionCutType3(extRay, numNonBasic, alpha);
-	    break;
-	case 4:
-	    if(shouldFindBestSol == true){
-		storeBestSolIntersectionCutType3(sol, bS->objVal_);
-	    }
-	    getAlphaIntersectionCutType2(extRay, numStruct, numNonBasic,
-					 alpha);
-	    break;
-	}
-	
-	cnt = 0;
-	mult = 0;
-	
-	double tmp(0.0);
-	double cutUb(-1.0);
-	double cutLb(-1 * solver->getInfinity());
-	double rowRhs;
-	int rowIndex;
-	
-	double * tmpValsList = new double[numStruct];
-	CoinFillN(tmpValsList, numStruct, 0.0);
-	
-	std::vector<int> indexList;
-	std::vector<double> valsList;
-	
-	for(i = 0; i < numCols; i++){
-	    if(isBasic[i] < 1){
-		if(alpha[cnt] >= 0){
-		    if (i < numStruct){
-			tmpValsList[i] += (1/alpha[cnt]);
+	case MibSIntersectionCutTypeIC:
+	    {
+		if(bilevelFreeSetType == MibSBilevelFreeSetTypeICWithNewLLSol){
+		    //it shows which lower level rows are not
+		    //necessary to be included in the convex set
+		    double *uselessIneqs = new double[lRows];
+		    double *lowerLevelSol = new double[lCols];
+		    CoinZeroN(uselessIneqs, lRows);
+		    CoinZeroN(lowerLevelSol, lCols);
+		    isTimeLimReached = false;
+		    findLowerLevelSol(uselessIneqs, lowerLevelSol, sol, isTimeLimReached);
+		    if(isTimeLimReached == true){
+			goto TREM_INTERSECTIONCUT;
 		    }
-		    else{
-			rowIndex = i - numStruct;
-			switch(rowsense[rowIndex]){
-			case 'L':
-			    mult = 1;
-			    break;
-			case 'G':
-			    mult = -1;
-			    break;
-			case 'E':
-			    std::cout
-				<< "MibS cannot currently handle equality constraints." << std::endl;
-			    abort();
-			    break;
-			case 'R':
-			    std::cout
-				<< "MibS cannot currently handle range constraints." << std::endl;
-			    abort();
-			    break;
-			}
-			rowRhs = mult * solver->getRightHandSide()[rowIndex];
-			cutUb += rowRhs/alpha[cnt];
-			for(j = 0; j < numStruct; j++){
-			    tmp = mult * matrix->getCoefficient(rowIndex,j);
-			    tmpValsList[j] += -1 * (tmp/alpha[cnt]);
-			}
+		    intersectionFound = getAlphaIC(extRay, uselessIneqs, lowerLevelSol,
+						   numStruct, numNonBasic, sol, alpha);
+
+		    if(intersectionFound == false){
+			localModel_->bS_->shouldPrune_ = true;
 		    }
+		    
+		    delete [] uselessIneqs;
+		    delete [] lowerLevelSol;
 		}
-		cnt ++;
+		else{
+		    intersectionFound = getAlphaIC(extRay, NULL, optLowerSolution,
+						   numStruct, numNonBasic, sol, alpha);
+		    intersectionFound = true;
+		}
+		break;
 	    }
+        case MibSIntersectionCutTypeWatermelon:
+	    {
+		double *uselessIneqs = new double[lRows + 2 * lCols];
+	        double *lowerLevelSol = new double[lCols];
+	        CoinZeroN(uselessIneqs, lRows);
+	        CoinZeroN(lowerLevelSol, lCols);
+		isTimeLimReached = false;
+	        findLowerLevelSolWatermelonIC(uselessIneqs, lowerLevelSol, lpSol, isTimeLimReached);
+		if(isTimeLimReached == true){
+		    goto TREM_INTERSECTIONCUT;
+		}
+		intersectionFound = getAlphaWatermelonIC(extRay, uselessIneqs, lowerLevelSol,
+							 numStruct, numNonBasic, lpSol, alpha);
+	        delete [] uselessIneqs;
+	        delete [] lowerLevelSol;
+	        break;
+	    }
+	case MibSIntersectionCutTypeHypercubeIC:
+	    if(shouldFindBestSol == true){
+		isTimeLimReached = false;
+		storeBestSolHypercubeIC(sol, bS->objVal_, isTimeLimReached);
+		if(isTimeLimReached == true){
+		    goto TREM_INTERSECTIONCUT;
+		}
+	    }
+	    getAlphaHypercubeIC(extRay, numStruct, numNonBasic, alpha);
+	    break;
+	case MibSIntersectionCutTypeTenderIC:
+	    if(shouldFindBestSol == true){
+		storeBestSolTenderIC(sol, bS->objVal_);
+	    }
+	    getAlphaTenderIC(extRay, numNonBasic, alpha);
+	    break;
+	case MibSIntersectionCutTypeHybridIC:
+	    if(shouldFindBestSol == true){
+		storeBestSolTenderIC(sol, bS->objVal_);
+	    }
+	    getAlphaHypercubeIC(extRay, numStruct, numNonBasic, alpha);
+	    break;
 	}
 	
-	for (i = 0; i < numStruct; i++){
-	    if(cstat[i] == VAR_AT_LB){
-		if(fabs(colLb[i] - colUb[i]) < etol){
-		    if(colLb[i] > etol){
+	if(intersectionFound){
+	    cnt = 0;
+	    mult = 0;
+
+	    double tmp(0.0);
+	    double cutUb(-1.0);
+	    double cutLb(-1 * solver->getInfinity());
+	    double rowRhs;
+	    int rowIndex;
+	
+	    double * tmpValsList = new double[numStruct];
+	    CoinFillN(tmpValsList, numStruct, 0.0);
+	
+	    std::vector<int> indexList;
+	    std::vector<double> valsList;
+		    
+	    for(i = 0; i < numCols; i++){
+		if(isBasic[i] < 1){
+		    if(alpha[cnt] >= 0){
+			if (i < numStruct){
+			    if((solver->isInteger(i)) && ((1/alpha[cnt]) - 1 > etol)){
+				alpha[cnt] = 1.0;
+			    }
+			    tmpValsList[i] += (1/alpha[cnt]);
+			}
+			else{
+			    rowIndex = i - numStruct;
+			    switch(rowsense[rowIndex]){
+			    case 'L':
+				mult = 1;
+				break;
+			    case 'G':
+				mult = -1;
+				break;
+			    case 'E':
+				std::cout
+				    << "MibS cannot currently handle equality constraints." << std::endl;
+				abort();
+				break;
+			    case 'R':
+				std::cout
+				    << "MibS cannot currently handle range constraints." << std::endl;
+				abort();
+				break;
+			    }
+			    rowRhs = mult * solver->getRightHandSide()[rowIndex];
+			    cutUb += rowRhs/alpha[cnt];
+			    for(j = 0; j < numStruct; j++){
+				tmp = mult * matrix->getCoefficient(rowIndex,j);
+			        tmpValsList[j] += -1 * (tmp/alpha[cnt]);
+			    }
+			}
+		    }
+		    cnt ++;
+		}
+	    }
+
+	    for (i = 0; i < numStruct; i++){
+		if(cstat[i] == VAR_AT_LB){
+		    if(fabs(colLb[i] - colUb[i]) < etol){
+			if(colLb[i] > etol){
+			    if(alpha[cnt] >= 0){
+				cutUb += -1 * (colLb[i]/alpha[cnt]);
+				tmpValsList[i] += 1/alpha[cnt];
+			    }
+			}
+			else{
+			    if(alpha[cnt] >= 0){
+				tmpValsList[i] += -1 * (1/alpha[cnt]);
+			    }
+			}
+			cnt ++;
+		    }
+		    else if(colLb[i] > etol){
 			if(alpha[cnt] >= 0){
 			    cutUb += -1 * (colLb[i]/alpha[cnt]);
 			    tmpValsList[i] += 1/alpha[cnt];
 			}
+			cnt ++;
 		    }
-		    else{
-			if(alpha[cnt] >= 0){
-			    tmpValsList[i] += -1 * (1/alpha[cnt]);
-			}
-		    }
-		    cnt ++;
 		}
-		else if(colLb[i] > etol){
+		else if(cstat[i] == VAR_AT_UB){
 		    if(alpha[cnt] >= 0){
-			cutUb += -1 * (colLb[i]/alpha[cnt]);
-			tmpValsList[i] += 1/alpha[cnt];
+			cutUb += colUb[i]/alpha[cnt];
+			tmpValsList[i] += -1 * (1/alpha[cnt]);
 		    }
 		    cnt ++;
 		}
 	    }
-	    else if(cstat[i] == VAR_AT_UB){
-		if(alpha[cnt] >= 0){
-		    cutUb += colUb[i]/alpha[cnt];
-		    tmpValsList[i] += -1 * (1/alpha[cnt]);
+
+	    for(i = 0; i < numStruct; i++){
+		if(fabs(tmpValsList[i]) >= etol){
+		    indexList.push_back(i);
+		    valsList.push_back(-1*tmpValsList[i]);
 		}
-		cnt ++;
 	    }
+
+	    numCuts += addCut(conPool, cutLb, cutUb, indexList, valsList,
+			      allowRemoveCut);
+	    delete [] tmpValsList;
+	    indexList.clear();
+	    valsList.clear();
 	}
-	
-	for(i = 0; i < numStruct; i++){
-	    if(fabs(tmpValsList[i]) >= etol){
-		indexList.push_back(i);
-		valsList.push_back(-1*tmpValsList[i]);
-	    }
-	}
-	
-	numCuts += addCut(conPool, cutLb, cutUb, indexList, valsList,
-			  false);
-	
+
+ TREM_INTERSECTIONCUT:
 	solver->disableSimplexInterface();
-	
+
 	delete ws;
+	delete [] lpSol;
 	delete[] rstat;
 	delete[] cstat;
 	delete[] basicIndexTmp;
 	delete[] basicIndex;
 	delete[] isBasic;
 	delete[] coef;
-	delete[] tmpValsList;
 	for(i = 0; i < numNonBasic; ++i){
 	    delete[] extRay[i];
 	}
 	delete[] extRay;
-	indexList.clear();
-	valsList.clear();
 	
 	return numCuts;
 }
 
 //#############################################################################
 void
-MibSCutGenerator::getAlphaIntersectionCutType1(double** extRay, double* optLowerSolution,
-					       int numStruct, int numNonBasic,
-					       const double* lpSol, std::vector<double> &alphaVec)
+MibSCutGenerator::findLowerLevelSol(double *uselessIneqs, double *lowerLevelSol,
+				    const double *sol, bool &isTimeLimReached)
 {
+    
+    std::string feasCheckSolver(localModel_->MibSPar_->entry
+				(MibSParams::feasCheckSolver));
+    int maxThreadsLL(localModel_->MibSPar_->entry
+		     (MibSParams::maxThreadsLL));
+    int whichCutsLL(localModel_->MibSPar_->entry
+		    (MibSParams::whichCutsLL));
 
+    double timeLimit(localModel_->AlpsPar()->entry(AlpsParams::timeLimit));
+    double remainingTime(0.0);
+
+    bool getA2Matrix(false), getG2Matrix(false);
     OsiSolverInterface * oSolver = localModel_->solver();
-
-    const CoinPackedMatrix * matrix = oSolver->getMatrixByRow();
-    double * lObjCoeffs = localModel_->getLowerObjCoeffs();
-    double objSense(localModel_->getLowerObjSense());
-    int lRows(localModel_->getLowerRowNum());
-    int numRows(lRows + 1);
-    int i, j, index, index1;
-
-    double * rowUb = new double[numRows];
-    double * rowLb = new double[numRows];
+    double infinity(oSolver->getInfinity());
+    int i, j;
+    int index(0), cntA2(0), cntG2(0), cntInt(0);
+    double coef(0.0), lObjVal(0.0);
+    int numCols(localModel_->getNumCols());
     int uCols(localModel_->getUpperDim());
     int lCols(localModel_->getLowerDim());
-    int * uColIndices = localModel_->getUpperColInd();
-    int * lColIndices = localModel_->getLowerColInd();
-    int * lRowIndices = localModel_->getLowerRowInd();
+    int lRows(localModel_->getLowerRowNum());
+    int numBinCols(lRows);
+    int newNumCols(lCols + numBinCols);
+    int newNumRows(lRows + 1);
+    double lObjSense(localModel_->getLowerObjSense());
+    double *lObjCoeff(localModel_->getLowerObjCoeffs());
+    int *lRowInd(localModel_->getLowerRowInd());
+    int *uColInd(localModel_->getUpperColInd());
+    int *lColInd(localModel_->getLowerColInd());
+    double *origRowLb(localModel_->getOrigRowLb());
+    double *origRowUb(localModel_->getOrigRowUb());
+    double *origColLb(localModel_->getOrigColLb());
+    double *origColUb(localModel_->getOrigColUb());
+    const double *colLb(oSolver->getColLower());
+    const double *colUb(oSolver->getColUpper());
+    char *rowSense = localModel_->getOrigRowSense();
 
-    for(i = 0; i < lRows; i++){
-	index = lRowIndices[i];
-	rowLb[i] = oSolver->getRowLower()[index] - 1;
-	rowUb[i] = oSolver->getRowUpper()[index] + 1;
+    CoinPackedVector row;
+    CoinPackedVector addedRow;
+
+    //stores A^2*x (x is the optimal first-level solution of relaxation)
+    double *multA2XOpt = new double[lRows];
+    //stores A^2*lb(x)
+    double *multA2XLb = new double[lRows];
+    //stores A^2*ub(x)
+    double *multA2XUb =new double[lRows];
+    //store max(A^2*lb(x), A^2*ub(x))
+    double *multA2XMax = new double[lRows];
+
+    double *optUpperSol = new double[uCols];
+    double *upperColLb = new double[uCols];
+    double *upperColUb = new double[uCols];
+    
+    CoinPackedMatrix * matrixA2 = 0;
+    CoinPackedMatrix * matrixG2 = 0;
+    CoinPackedMatrix * newMatrix = new CoinPackedMatrix(false, 0, 0);
+    newMatrix->setDimensions(0, newNumCols);
+
+    double *newRowLb = new double[newNumRows];
+    double *newRowUb = new double[newNumRows];
+    CoinZeroN(newRowLb, newNumRows);
+    CoinZeroN(newRowUb, newNumRows);
+    double *newColLb = new double[newNumCols];
+    double *newColUb = new double[newNumCols];
+    CoinZeroN(newColLb, newNumCols);
+    CoinZeroN(newColUb, newNumCols);
+    double *newObjCoeff = new double[newNumCols];
+    CoinZeroN(newObjCoeff, newNumCols);
+    int *integerVars = new int[newNumCols];
+    CoinZeroN(integerVars, newNumCols);
+
+    if(!localModel_->getA2Matrix()){
+	getA2Matrix = true;
     }
 
-    rowUb[lRows] = 0;
-    rowLb[lRows] = 0;
+    if(!localModel_->getG2Matrix()){
+	getG2Matrix = true;
+    }
 
-    double * rhsDiff = new double[numRows];
-    CoinFillN(rhsDiff, numRows, 0.0);
+    if((getA2Matrix) || (getG2Matrix)){
+	getLowerMatrices(false, getA2Matrix, getG2Matrix);
+    }
 
-    double tmp(0.0);
+    //extracting optimal first-level solution of the relaxation problem and
+    // the original bounds
+    for(i = 0; i < uCols; i++){
+	index = uColInd[i];
+	optUpperSol[i] = sol[index];
+	upperColLb[i] = colLb[index];
+	upperColUb[i] = colUb[index];
+    }
+
+    matrixA2 = localModel_->getA2Matrix();
+    matrixG2 = localModel_->getG2Matrix();
+
+    matrixA2->times(optUpperSol, multA2XOpt);
+    matrixA2->times(upperColLb, multA2XLb);
+    matrixA2->times(upperColUb, multA2XUb);
+    for(i = 0; i < lRows; i++){
+	multA2XMax[i] = CoinMax(multA2XLb[i], multA2XUb[i]);
+    }
+
+    //filling matrix of coefficients
+    for(i = 0; i < lCols; i++){
+	addedRow.insert(i, lObjCoeff[i] * lObjSense);
+    }
+
+    newMatrix->appendRow(addedRow);
+    addedRow.clear();
 
     for(i = 0; i < lRows; i++){
-	index = lRowIndices[i];
-	for(j = 0; j < uCols; j++){
-	    index1 = uColIndices[j];
-	    tmp = matrix->getCoefficient(index, index1);
-	    if(tmp != 0){
-		rhsDiff[i] += tmp  * lpSol[index1];
-	    }
+	row = matrixG2->getVector(i);
+	addedRow.append(row);
+	addedRow.insert(i + lCols, multA2XOpt[i] - multA2XMax[i]);
+	newMatrix->appendRow(addedRow);
+	addedRow.clear();
+    }
+
+    //filling row bounds
+    CoinFillN(newRowLb, newNumRows, -1 * infinity);
+    for(i = 0; i < lCols; i++){
+	index = lColInd[i];
+	lObjVal += lObjCoeff[i] * sol[index];
+    }
+    newRowUb[0] = lObjVal * lObjSense - 1;
+
+    for(i = 0; i < lRows; i++){
+	index = lRowInd[i];
+	if(rowSense[index] == 'L'){
+	    newRowUb[i + 1] = origRowUb[index] - multA2XMax[i];
 	}
-	for(j = 0; j < lCols; j++){
-	    index1 = lColIndices[j];
-	    tmp = matrix->getCoefficient(index, index1);
-	    rhsDiff[i] += tmp  * optLowerSolution[j];
+	else if(rowSense[index] == 'G'){
+	    newRowUb[i + 1] = -1 * origRowLb[index] - multA2XMax[i];
 	}
+	else{
+	    assert(0);
+	}
+    }
+
+    //filling col bounds
+    for(i = 0; i < lCols; i++){
+	newColLb[i] = origColLb[lColInd[i]];
+	newColUb[i] = origColUb[lColInd[i]];
+    }
+
+    CoinFillN(newColLb + lCols, numBinCols, 0.0);
+    CoinFillN(newColUb + lCols, numBinCols, 1.0);
+
+    //filling objective coefficients
+    CoinFillN(newObjCoeff + lCols, numBinCols, 1.0);
+
+    //filling integer vars
+    for(i = 0; i < lCols; i++){
+	index = lColInd[i];
+	if(oSolver->isInteger(index)){
+	    integerVars[cntInt] = i;
+	    cntInt ++;
+	}
+    }
+    CoinIotaN(&integerVars[cntInt], numBinCols, lCols);
+    cntInt += numBinCols;
+
+    OsiSolverInterface * nSolver;
+
+    if(feasCheckSolver == "Cbc"){
+        nSolver = new OsiCbcSolverInterface();
+    }else if (feasCheckSolver == "SYMPHONY"){
+#ifdef COIN_HAS_SYMPHONY
+	nSolver = new OsiSymSolverInterface();
+#else
+	throw CoinError("SYMPHONY chosen as solver, but it has not been enabled",
+			"findLowerLevelSol", "MibSCutGenerator");
+#endif
+    }else if (feasCheckSolver == "CPLEX"){
+#ifdef COIN_HAS_CPLEX
+	nSolver = new OsiCpxSolverInterface();
+#else
+	throw CoinError("CPLEX chosen as solver, but it has not been enabled",
+			"findLowerLevelSol", "MibsBilevel");
+#endif
+    }else{
+	throw CoinError("Unknown solver chosen",
+			"findLowerLevelSol", "MibsBilevel");
+    }
+
+    nSolver->loadProblem(*newMatrix, newColLb, newColUb,
+			 newObjCoeff, newRowLb, newRowUb);
+
+    nSolver->setInteger(integerVars, cntInt);
+    nSolver->setObjSense(1); //1 min; -1 max
+    nSolver->setHintParam(OsiDoReducePrint, true, OsiHintDo);
+
+    remainingTime = timeLimit - localModel_->broker_->subTreeTimer().getTime();
+    remainingTime = CoinMax(remainingTime, 0.00);
+    
+    if(feasCheckSolver == "Cbc"){
+	dynamic_cast<OsiCbcSolverInterface *>
+	    (nSolver)->getModelPtr()->messageHandler()->setLogLevel(0);
+    }else if (feasCheckSolver == "SYMPHONY"){
+#if COIN_HAS_SYMPHONY
+	sym_environment *env = dynamic_cast<OsiSymSolverInterface *>
+	    (nSolver)->getSymphonyEnvironment();
+	sym_set_dbl_param(env, "time_limit", remainingTime);
+	sym_set_int_param(env, "do_primal_heuristic", FALSE);
+        sym_set_int_param(env, "verbosity", -2);
+        sym_set_int_param(env, "prep_level", -1);
+        sym_set_int_param(env, "max_active_nodes", maxThreadsLL);
+        sym_set_int_param(env, "tighten_root_bounds", FALSE);
+        sym_set_int_param(env, "max_sp_size", 100);
+        sym_set_int_param(env, "do_reduced_cost_fixing", FALSE);
+	if (whichCutsLL == 0){
+	    sym_set_int_param(env, "generate_cgl_cuts", FALSE);
+	}else{
+	    sym_set_int_param(env, "generate_cgl_gomory_cuts", GENERATE_DEFAULT);
+	}
+	if(whichCutsLL == 1){
+	    sym_set_int_param(env, "generate_cgl_knapsack_cuts",
+			      DO_NOT_GENERATE);
+	    sym_set_int_param(env, "generate_cgl_probing_cuts",
+			      DO_NOT_GENERATE);
+	    sym_set_int_param(env, "generate_cgl_clique_cuts",
+			      DO_NOT_GENERATE);
+	    sym_set_int_param(env, "generate_cgl_twomir_cuts",
+			      DO_NOT_GENERATE);
+	    sym_set_int_param(env, "generate_cgl_flowcover_cuts",
+			      DO_NOT_GENERATE);
+	}
+#endif
+    }else if(feasCheckSolver == "CPLEX"){
+#ifdef COIN_HAS_CPLEX
+	nSolver->setHintParam(OsiDoReducePrint);
+	nSolver->messageHandler()->setLogLevel(0);
+	CPXENVptr cpxEnv =
+	    dynamic_cast<OsiCpxSolverInterface*>(nSolver)->getEnvironmentPtr();
+	assert(cpxEnv);
+	CPXsetintparam(cpxEnv, CPX_PARAM_SCRIND, CPX_OFF);
+	CPXsetintparam(cpxEnv, CPX_PARAM_THREADS, maxThreadsLL);
+#endif
+    }
+
+    nSolver->branchAndBound();
+
+    if((feasCheckSolver == "SYMPHONY") && (sym_is_time_limit_reached
+					   (dynamic_cast<OsiSymSolverInterface *>
+					    (nSolver)->getSymphonyEnvironment()))){
+	isTimeLimReached = true;
+	localModel_->bS_->shouldPrune_ = true;
+    }
+    else if(nSolver->isProvenOptimal()){
+	const double *optSol = nSolver->getColSolution();
+	CoinDisjointCopyN(optSol, lCols, lowerLevelSol);
+	CoinDisjointCopyN(optSol + lCols, numBinCols, uselessIneqs);
+    }
+    else{//this case should not happen when we use intersection cut for removing
+	//the optimal solution of relaxation which satisfies integrality requirements
+	assert(0);
+    }
+
+    delete [] multA2XOpt;
+    delete [] multA2XLb;
+    delete [] multA2XUb;
+    delete [] multA2XMax;
+    delete [] optUpperSol;
+    delete [] upperColLb;
+    delete [] upperColUb;
+    delete newMatrix;
+    delete [] newRowLb;
+    delete [] newRowUb;
+    delete [] newColLb;
+    delete [] newColUb;
+    delete [] newObjCoeff;
+    delete [] integerVars;
+    delete nSolver;
+    
+}
+    
+//#############################################################################
+bool
+MibSCutGenerator::getAlphaIC(double** extRay, double* uselessIneqs,
+			     double* lowerSolution, int numStruct, int numNonBasic,
+			     const double* lpSol, std::vector<double> &alphaVec)
+{
+    bool intersectionFound(false);
+    int i;
+    int colIndex(0), rowIndex(0);
+    double alpha(0.0), value(0.0);
+    double etol(localModel_->etol_);
+    int lRows(localModel_->getLowerRowNum());
+    int numRows(lRows + 1);
+    int numCols(localModel_->getNumCols());
+    int uCols(localModel_->getUpperDim());
+    int lCols(localModel_->getLowerDim());
+    int *uColInd(localModel_->getUpperColInd());
+    int *lColInd(localModel_->getLowerColInd());
+    int *lRowInd(localModel_->getLowerRowInd());
+    double *origRowLb(localModel_->getOrigRowLb());
+    double *origRowUb(localModel_->getOrigRowUb());
+    char *rowSense = localModel_->getOrigRowSense();
+    double *lObjCoeffs(localModel_->getLowerObjCoeffs());
+    double objSense(localModel_->getLowerObjSense());
+    bool getA2Matrix(false), getG2Matrix(false);
+    
+    if(localModel_->getA2Matrix() == NULL){
+	getA2Matrix = true;
+    }
+
+    if(localModel_->getG2Matrix() == NULL){
+	getG2Matrix = true;
+    }
+
+    if((getA2Matrix) || (getG2Matrix)){
+	getLowerMatrices(false, getA2Matrix, getG2Matrix);
+    }
+    
+    CoinPackedMatrix *matrixA2 = localModel_->getA2Matrix();
+    CoinPackedMatrix *matrixG2 = localModel_->getG2Matrix();
+
+    double *ray= new double[numCols];
+    CoinZeroN(ray, numCols);
+    double *rhs = new double[numRows];
+    CoinZeroN(rhs, numRows);
+    double *optUpperSol = new double[uCols];
+    CoinZeroN(optUpperSol, uCols);
+    //stores A^2*x (x is the optimal first-level solution of relaxation)
+    double *multA2XOpt = new double[lRows];
+    //Stores G^2*lowerSolution
+    double *multG2LSol = new double[lRows];
+
+    //extracting optimal first-level solution of the relaxation problem
+    for(i = 0; i < uCols; i++){
+	colIndex = uColInd[i];
+	optUpperSol[i] = lpSol[colIndex];
+    }
+
+    matrixA2->times(optUpperSol, multA2XOpt);
+    matrixG2->times(lowerSolution, multG2LSol);
+
+    for(i = 0; i < lRows; i++){
+	rowIndex = lRowInd[i];
+	if(rowSense[rowIndex] == 'L'){
+	    value = origRowUb[rowIndex];
+	}
+	else{
+	    value = -1 * origRowLb[rowIndex];
+	}
+	rhs[i] = value + 1 - multG2LSol[i] - multA2XOpt[i];
     }
 
     for(i = 0; i < lCols; i++){
-	index1 = lColIndices[i];
-	rowUb[lRows] += objSense * lObjCoeffs[i] * (lpSol[index1] - optLowerSolution[i]);
+	colIndex = lColInd[i];
+	rhs[lRows] += objSense * lObjCoeffs[i] * (lpSol[colIndex] - lowerSolution[i]);
     }
-
-    for(i = 0; i < lRows; i++){
-	rowLb[i] += -1 * rhsDiff[i];
-	rowUb[i] += -1 * rhsDiff[i];
-    }
-
-    double out;
 
     for (i = 0; i < numNonBasic; i++){
-	out = solveModelIntersectionCutType1(matrix, extRay, rowLb, rowUb,
-					     lRows, numRows, numNonBasic, i);
-	alphaVec[i] = out;
+	memcpy(ray, extRay[i], sizeof(double) * numCols);
+	alpha = solveModelIC(uselessIneqs, ray, rhs, numNonBasic);
+	alphaVec[i] = alpha;
+	if(alpha > -1 * etol){
+	    intersectionFound = true;
+	}
     }
 
-    delete[] rowUb;
-    delete[] rowLb;
-    delete[] rhsDiff;
+    delete [] ray;
+    delete [] rhs;
+    delete [] optUpperSol;
+    delete [] multA2XOpt;
+    delete [] multG2LSol;
+
+    return intersectionFound;
 
 }
 
 //#############################################################################
 double
-MibSCutGenerator::solveModelIntersectionCutType1(const CoinPackedMatrix* matrix,
-						 double** extRay, double* rowLb,double* rowUb,
-						 int lowerRows, int numRows, int numNonBasic, int cnt)
+MibSCutGenerator::solveModelIC(double *uselessIneqs, double *ray, double *rhs,
+			       int numNonBasic)
 {
-
-    OsiSolverInterface * hSolver = localModel_->solver();
-
-    CoinPackedMatrix * newMat = new CoinPackedMatrix(false, 0, 0);
-    newMat->setDimensions(0, 1);
-
-    double objSense(localModel_->getLowerObjSense());
-    double * lObjCoeffs = localModel_->getLowerObjCoeffs();
+    bool isUnbounded(true);
+    int i;
+    double value(0.0);
+    double alphaUb(localModel_->solver()->getInfinity()), alpha(0.0);
+    double etol(localModel_->etol_);
     int uCols(localModel_->getUpperDim());
     int lCols(localModel_->getLowerDim());
-    int * uColIndices = localModel_->getUpperColInd();
-    int * lColIndices = localModel_->getLowerColInd();
-    int * lRowIndices = localModel_->getLowerRowInd();
-    double alphaUb(hSolver->getInfinity());
-    double etol(localModel_->etol_);
-    int i, j, index, index1;
-    double tmp(0.0);
-
+    int lRows(localModel_->getLowerRowNum());
+    int numRows(lRows + 1);
+    int *uColInd(localModel_->getUpperColInd());
+    int *lColInd(localModel_->getLowerColInd());
+    double *lObjCoeffs(localModel_->getLowerObjCoeffs());
+    double objSense(localModel_->getLowerObjSense());
+    CoinPackedMatrix *matrixA2 = localModel_->getA2Matrix();
+    
     double * coeff = new double[numRows];
     CoinFillN(coeff, numRows, 0.0);
+    double *upperRay = new double[uCols];
 
-    rowLb[lowerRows] = -1 * hSolver->getInfinity();
-
-    for(i = 0; i < lowerRows; i++){
-	index = lRowIndices[i];
-	for(j = 0; j < uCols; j++){
-	    index1 = uColIndices[j];
-	    tmp = matrix->getCoefficient(index, index1);
-	    if(tmp != 0){
-		coeff[i] += tmp * extRay[cnt][index1];
-	    }
-	}
+    //extract the upper component of ray
+    for(i = 0; i < uCols; i++){
+	upperRay[i] = ray[uColInd[i]];
     }
+
+    matrixA2->times(upperRay, coeff);
 
     for(i = 0; i < lCols; i++){
-	index1 = lColIndices[i];
-	coeff[lowerRows] += -1 * objSense * lObjCoeffs[i] * extRay[cnt][index1];
+	coeff[lRows] += -1 * objSense * lObjCoeffs[i] * ray[lColInd[i]];
     }
 
-    const char * rowsense = hSolver->getRowSense();
-
-    bool isUnbounded(true);
-
-    for (i = 0; i < numRows-1; i++){
-	index = lRowIndices[i];
-	switch(rowsense[index]){
-	case 'L':
+    for(i = 0; i < numRows-1; i++){
+	if(((uselessIneqs) && (uselessIneqs[i] > 0.5)) ||
+	   (!uselessIneqs)){
 	    if(coeff[i] > etol){
-		if(alphaUb > (rowUb[i]/coeff[i])){
-		    alphaUb = rowUb[i]/coeff[i];
+		value = rhs[i]/coeff[i];
+		if(alphaUb - value > etol){
+		    alphaUb = value;
 		    isUnbounded = false;
 		}
 	    }
-	    break;
-	case 'G':
-	    if(coeff[i] < (-1 * etol)){
-		if(alphaUb > (rowLb[i]/coeff[i])){
-		    alphaUb = rowLb[i]/coeff[i];
-		    isUnbounded= false;
-		}
-	    }
-	    break;
-	case 'E':
-	    std::cout
-		<< "MibS cannot currently handle equality constraints." << std::endl;
-	    abort();
-	    break;
-	case 'R':
-	    std::cout
-		<< "MibS cannot currently handle range constraints." << std::endl;
-	    abort();
-	    break;
 	}
     }
 
-    if(coeff[lowerRows] > etol){
-	if(alphaUb > (rowUb[lowerRows]/coeff[lowerRows])){
-	    alphaUb = rowUb[lowerRows]/coeff[lowerRows];
-	    isUnbounded= false;
+    if(coeff[lRows] > etol){
+	value = rhs[lRows]/coeff[lRows];
+	if(alphaUb - value > etol){
+	    alphaUb = value;
+	    isUnbounded = false;
 	}
     }
-
-    double alpha(0);
 
     assert(alphaUb >= 0);
 
@@ -790,34 +1137,422 @@ MibSCutGenerator::solveModelIntersectionCutType1(const CoinPackedMatrix* matrix,
 	alpha = -1;
     }
 
-    delete[] coeff;
+    delete [] coeff;
+    delete [] upperRay;
 
     return alpha;
 }
 
 //#############################################################################
 void
-MibSCutGenerator::storeBestSolIntersectionCutType2(const double* lpSol,
-						   double optLowerObj)
+MibSCutGenerator::findLowerLevelSolWatermelonIC(double *uselessIneqs, double *lowerLevelSol,
+						double* lpSol, bool &isTimeLimReached)
 {
-
-    bool warmStartLL(localModel_->MibSPar_->entry
-		     (MibSParams::warmStartLL));
+    std::string feasCheckSolver(localModel_->MibSPar_->entry
+				(MibSParams::feasCheckSolver));
     int maxThreadsLL(localModel_->MibSPar_->entry
 		     (MibSParams::maxThreadsLL));
     int whichCutsLL(localModel_->MibSPar_->entry
 		    (MibSParams::whichCutsLL));
-    int probType(localModel_->MibSPar_->entry
-		 (MibSParams::bilevelProblemType));
+    double timeLimit(localModel_->AlpsPar()->entry(AlpsParams::timeLimit));
+    double remainingTime(0.0);
+    
+    OsiSolverInterface *oSolver = localModel_->solver();
+    double infinity(oSolver->getInfinity());
+    bool getA2G2Matrix(false), getG2Matrix(false);
+    int i, j;
+    int rowIndex(0), colIndex(0), numElements(0), pos(0), cntInt(0);
+    double rhs(0.0), value(0.0);
+    int numCols(localModel_->getNumCols());
+    int lCols(localModel_->getLowerDim());
+    int lRows(localModel_->getLowerRowNum());
+    int numContCols(lRows + 2 * lCols);
+    int newNumCols(lCols + numContCols);
+    int newNumRows(2 * lRows + 2 * lCols + 1);
+    double lObjSense(localModel_->getLowerObjSense());
+    double *lObjCoeff(localModel_->getLowerObjCoeffs());
+    int *lColInd(localModel_->getLowerColInd());
+    int *lRowInd(localModel_->getLowerRowInd());
+    double *origRowLb(localModel_->getOrigRowLb());
+    double *origRowUb(localModel_->getOrigRowUb());
+    double *origColLb(localModel_->getOrigColLb());
+    double *origColUb(localModel_->getOrigColUb());
+    char *origRowSense(localModel_->getOrigRowSense());
+    CoinPackedMatrix origMatrix = *localModel_->getOrigConstCoefMatrix();
+
+    CoinShallowPackedVector origRow;
+    CoinPackedVector row;
+    CoinPackedVector addedRow;
+
+    //store A^2*x + G^2*y((x,y) is the optimal solution of relaxation)
+    double *lCoeffsTimesLpSol = new double[lRows];
+
+    origMatrix.reverseOrdering();
+    
+    if(!localModel_->getLowerConstCoefMatrix()){
+	getA2G2Matrix = true;
+    }
+
+    if(!localModel_->getG2Matrix()){
+	getG2Matrix = true;
+    }
+
+    if((getA2G2Matrix) || (getG2Matrix)){
+	getLowerMatrices(getA2G2Matrix, false, getG2Matrix);
+    }
+
+    CoinPackedMatrix *matrixA2G2 = localModel_->getLowerConstCoefMatrix();
+    
+    //filling watermelonICSolver_
+    if(!watermelonICSolver_){
+	CoinPackedMatrix * newMatrix = new CoinPackedMatrix(false, 0, 0);
+	newMatrix->setDimensions(0, newNumCols);
+	CoinPackedMatrix *matrixG2 = localModel_->getG2Matrix();
+	double *newRowLb = new double[newNumRows];
+	double *newRowUb = new double[newNumRows];
+	CoinZeroN(newRowLb, newNumRows);
+	CoinZeroN(newRowUb, newNumRows);
+	double *newColLb = new double[newNumCols];
+	double *newColUb = new double[newNumCols];
+	CoinZeroN(newColLb, newNumCols);
+	CoinZeroN(newColUb, newNumCols);
+	double *newObjCoeff = new double[newNumCols];
+	CoinZeroN(newObjCoeff, newNumCols);
+	int *integerVars = new int[lCols];
+	CoinZeroN(integerVars, lCols);
+	
+	for(i = 0; i < lCols; i++){
+	    addedRow.insert(i, lObjCoeff[i] * lObjSense);
+	}
+	newMatrix->appendRow(addedRow);
+        addedRow.clear();
+
+	for(i = 0; i < lRows; i++){
+	origRow = matrixG2->getVector(i);
+	addedRow = origRow;
+	newMatrix->appendRow(addedRow);
+	addedRow.insert(i + lCols, -1.00);
+	newMatrix->appendRow(addedRow);
+	addedRow.clear();
+	}
+
+	colIndex = lCols + lRows;
+	for(i = 0; i < lCols; i++){
+	    addedRow.insert(i, 1.00);
+	    addedRow.insert(colIndex + i, -1.00);
+	    newMatrix->appendRow(addedRow);
+	    addedRow.clear();
+	}
+
+	colIndex = 2 * lCols + lRows;
+	for(i = 0; i < lCols; i++){
+	    addedRow.insert(i, -1.00);
+	    addedRow.insert(colIndex + i, -1.00);
+	    newMatrix->appendRow(addedRow);
+	    addedRow.clear();
+	}
+
+	//filling row bounds
+	CoinFillN(newRowLb, newNumRows, -1 * infinity);
+
+	//filling col bounds
+	CoinFillN(newColUb, newNumCols, infinity);
+        for(i = 0; i < lCols; i++){
+	    colIndex = lColInd[i];
+	    newColLb[i] = origColLb[colIndex] - lpSol[colIndex];
+	    newColUb[i] = origColUb[colIndex] - lpSol[colIndex];
+	}
+
+	//filling objective coeffs
+	CoinFillN(newObjCoeff + lCols, numContCols, 1.0);
+
+	//filling integer vars
+	for(i = 0; i < lCols; i++){
+	    colIndex = lColInd[i];
+	    if(oSolver->isInteger(colIndex)){
+		integerVars[cntInt] = i;
+		cntInt ++;
+	    }
+	}
+
+	if(feasCheckSolver == "Cbc"){
+	    watermelonICSolver_ = new OsiCbcSolverInterface();
+	}else if (feasCheckSolver == "SYMPHONY"){
+#ifdef COIN_HAS_SYMPHONY
+	    watermelonICSolver_ = new OsiSymSolverInterface();
+#else
+	    throw CoinError("SYMPHONY chosen as solver, but it has not been enabled",
+			    "findLowerLevelSolWatermelonIC", "MibSCutGenerator");
+#endif
+	}else if (feasCheckSolver == "CPLEX"){
+#ifdef COIN_HAS_CPLEX
+	    watermelonICSolver_ = new OsiCpxSolverInterface();
+#else
+	    throw CoinError("CPLEX chosen as solver, but it has not been enabled",
+			    "findLowerLevelSolWatermelonIC", "MibSCutGenerator");
+#endif
+	}else{
+	    throw CoinError("Unknown solver chosen",
+			    "findLowerLevelSolWatermelonIC", "MibSCutGenerator");
+	}
+
+	watermelonICSolver_->loadProblem(*newMatrix, newColLb, newColUb,
+					 newObjCoeff, newRowLb, newRowUb);
+
+	watermelonICSolver_->setInteger(integerVars, cntInt);
+        watermelonICSolver_->setObjSense(1); //1 min; -1 max
+        watermelonICSolver_->setHintParam(OsiDoReducePrint, true, OsiHintDo);
+
+	delete newMatrix;
+	delete [] newRowLb;
+	delete [] newRowUb;
+	delete [] newColLb;
+	delete [] newColUb;
+	delete [] newObjCoeff;
+	delete [] integerVars;
+    }
+
+    OsiSolverInterface *nSolver = watermelonICSolver_;
+
+    matrixA2G2->times(lpSol, lCoeffsTimesLpSol);
+
+    //modifying row bounds
+    nSolver->setRowUpper(0, -1);
+    for(i = 0; i < lRows; i++){
+	rowIndex = lRowInd[i];
+	if(origRowSense[rowIndex] == 'G'){
+	    rhs = -1 * origRowLb[rowIndex];
+	}
+	else{
+	    rhs = origRowUb[rowIndex];
+	}
+	nSolver->setRowUpper(2 * i + 1, rhs - lCoeffsTimesLpSol[i]);
+    }
+
+    //modifying col bounds
+    for(i = 0; i < lCols; i++){
+	colIndex = lColInd[i];
+	value = lpSol[colIndex];
+	nSolver->setColLower(i, origColLb[colIndex] - value);
+	nSolver->setColUpper(i, origColUb[colIndex] - value);
+    }
+
+    remainingTime = timeLimit - localModel_->broker_->subTreeTimer().getTime();
+    remainingTime = CoinMax(remainingTime, 0.00);
+
+    if(feasCheckSolver == "Cbc"){
+	        dynamic_cast<OsiCbcSolverInterface *>
+		    (nSolver)->getModelPtr()->messageHandler()->setLogLevel(0);
+    }else if (feasCheckSolver == "SYMPHONY"){
+#if COIN_HAS_SYMPHONY
+	        sym_environment *env = dynamic_cast<OsiSymSolverInterface *>
+		    (nSolver)->getSymphonyEnvironment();
+		sym_set_dbl_param(env, "time_limit", remainingTime);
+		sym_set_int_param(env, "do_primal_heuristic", FALSE);
+		sym_set_int_param(env, "verbosity", -2);
+		sym_set_int_param(env, "prep_level", -1);
+		sym_set_int_param(env, "max_active_nodes", maxThreadsLL);
+		sym_set_int_param(env, "tighten_root_bounds", FALSE);
+		sym_set_int_param(env, "max_sp_size", 100);
+		sym_set_int_param(env, "do_reduced_cost_fixing", FALSE);
+		if (whichCutsLL == 0){
+		    sym_set_int_param(env, "generate_cgl_cuts", FALSE);
+		}else{
+		    sym_set_int_param(env, "generate_cgl_gomory_cuts", GENERATE_DEFAULT);
+		}
+		if(whichCutsLL == 1){
+		    sym_set_int_param(env, "generate_cgl_knapsack_cuts",
+				      DO_NOT_GENERATE);
+		    sym_set_int_param(env, "generate_cgl_probing_cuts",
+				      DO_NOT_GENERATE);
+		    sym_set_int_param(env, "generate_cgl_clique_cuts",
+				      DO_NOT_GENERATE);
+		    sym_set_int_param(env, "generate_cgl_twomir_cuts",
+				      DO_NOT_GENERATE);
+		    sym_set_int_param(env, "generate_cgl_flowcover_cuts",
+				      DO_NOT_GENERATE);
+		}
+#endif
+
+    }else if(feasCheckSolver == "CPLEX"){
+#ifdef COIN_HAS_CPLEX
+	nSolver->setHintParam(OsiDoReducePrint);
+	nSolver->messageHandler()->setLogLevel(0);
+	        CPXENVptr cpxEnv =
+		    dynamic_cast<OsiCpxSolverInterface*>(nSolver)->getEnvironmentPtr();
+		assert(cpxEnv);
+		CPXsetintparam(cpxEnv, CPX_PARAM_SCRIND, CPX_OFF);
+		CPXsetintparam(cpxEnv, CPX_PARAM_THREADS, maxThreadsLL);
+#endif
+    }
+
+    nSolver->branchAndBound();
+
+    if((feasCheckSolver == "SYMPHONY") && (sym_is_time_limit_reached
+					   (dynamic_cast<OsiSymSolverInterface *>
+					    (nSolver)->getSymphonyEnvironment()))){
+	isTimeLimReached = true;
+	localModel_->bS_->shouldPrune_ = true;
+    }
+    else if(nSolver->isProvenOptimal()){
+	const double *optSol = nSolver->getColSolution();
+	CoinDisjointCopyN(optSol, lCols, lowerLevelSol);
+	CoinDisjointCopyN(optSol + lCols, numContCols, uselessIneqs);
+    }
+    else{//this case should not happen when we use intersection cut for removing
+	//the optimal solution of relaxation which satisfies integrality requirements
+	assert(0);
+    }
+    delete [] lCoeffsTimesLpSol;
+
+}
+
+//#############################################################################
+bool
+MibSCutGenerator::getAlphaWatermelonIC(double** extRay, double *uselessIneqs,
+				       double* lowerSolution, int numStruct,
+				       int numNonBasic, double* lpSol,
+				       std::vector<double> &alphaVec)
+{
+    int i, j;
+    int cntRows(0), rowIndex(0), colIndex(0);
+    double value(0.0);
+    double etol(localModel_->etol_);
+    double infinity(localModel_->solver()->getInfinity());
+    double alphaUb(infinity);
+    bool isUnbounded(true), intersectionFound(false);
+    int numCols(localModel_->getNumCols());
+    int lCols(localModel_->getLowerDim());
+    int lRows(localModel_->getLowerRowNum());
+    int sizeRhs(lRows + 2 * lCols);
+    int *lColInd(localModel_->getLowerColInd());
+    int *lRowInd(localModel_->getLowerRowInd());
+    double *origRowLb(localModel_->getOrigRowLb());
+    double *origRowUb(localModel_->getOrigRowUb());
+    double *origColLb(localModel_->getOrigColLb());
+    double *origColUb(localModel_->getOrigColUb());
+    char *origRowSense(localModel_->getOrigRowSense());
+    double *rhs = new double[sizeRhs];
+    CoinZeroN(rhs, sizeRhs);
+
+    double *ray= new double[numCols];
+    CoinZeroN(ray, numCols);
+
+    double * coeff = new double[sizeRhs];
+    CoinFillN(coeff, sizeRhs, 0.0);
+    
+    //store A^2*x + G^2*y((x,y) is the optimal solution of relaxation)
+    double *lCoeffsTimesLpSol = new double[lRows];
+
+    double *lCoeffsTimesRay = new double[lRows];
+    
+    //store G^2*deltaY
+    double *G2TimeslSol = new double[lRows];
+
+    CoinPackedMatrix *matrixA2G2 = localModel_->getLowerConstCoefMatrix();
+    CoinPackedMatrix *matrixG2 = localModel_->getG2Matrix();
+
+    matrixA2G2->times(lpSol, lCoeffsTimesLpSol);
+    matrixG2->times(lowerSolution, G2TimeslSol);
+
+    for(i = 0; i < lRows; i++){
+	rowIndex = lRowInd[i];
+	if(origRowSense[i] == 'L'){
+	    rhs[i] = origRowUb[rowIndex] + 1 - G2TimeslSol[i] -
+		lCoeffsTimesLpSol[i];
+	}
+	else if(origRowSense[i] == 'G'){
+	    rhs[i] = -1 * origRowLb[rowIndex] + 1 - G2TimeslSol[i] -
+		lCoeffsTimesLpSol[i];
+	}
+	else{
+	    assert(0);
+	}
+    }
+
+    cntRows = lRows;
+    for(i = 0; i < lCols; i++){
+	colIndex = lColInd[i];
+	value = lpSol[colIndex];
+	rhs[cntRows + i] = origColUb[colIndex] + 1 - lowerSolution[i] - value;
+	rhs[cntRows + lCols + i] = -1 * origColLb[colIndex] + 1 +
+	    lowerSolution[i] + value;
+    }
+
+    for(i = 0; i < sizeRhs - lCols; i++){
+	assert(rhs[i] > 0);
+    }
+	
+    for(i = 0; i < numNonBasic; i++){
+	memcpy(ray, extRay[i], sizeof(double) * numCols);
+	matrixA2G2->times(ray, lCoeffsTimesRay);
+	CoinDisjointCopyN(lCoeffsTimesRay, lRows, coeff);
+	for(j = 0; j < lCols; j++){
+	    value = ray[lColInd[j]];
+	    coeff[j + lRows] = value;
+	    coeff[j + lRows + lCols] = -1 * value;
+	}
+	alphaUb = infinity;
+	isUnbounded = true;
+	for(j = 0; j < sizeRhs; j++){
+	    //uselessIneqs[j] = 3;
+	    if((uselessIneqs[j] > etol) && (coeff[j] > etol)){
+		value = rhs[j]/coeff[j];
+		if(alphaUb - value > etol){
+		    alphaUb = value;
+		    isUnbounded = false;
+		}
+	    }
+	}
+	assert(alphaUb >= 0);
+	if(isUnbounded == false){
+	    alphaVec[i] = alphaUb;
+	    intersectionFound = true;
+	}
+	else{
+	    alphaVec[i] = -1;
+	}
+    }
+
+    if(intersectionFound == false){
+	localModel_->bS_->shouldPrune_ = true;
+    }
+	
+
+    delete [] rhs;
+    delete [] ray;
+    delete [] coeff;
+    delete [] lCoeffsTimesLpSol;
+    delete [] lCoeffsTimesRay;
+    delete [] G2TimeslSol;
+
+    return intersectionFound;
+
+}
+
+//#############################################################################
+void
+MibSCutGenerator::storeBestSolHypercubeIC(const double* lpSol, double optLowerObj,
+					  bool &isTimeLimReached)
+{
+
+    int maxThreadsLL(localModel_->MibSPar_->entry
+		     (MibSParams::maxThreadsLL));
+    int whichCutsLL(localModel_->MibSPar_->entry
+		    (MibSParams::whichCutsLL));
     std::string feasCheckSolver(localModel_->MibSPar_->entry
 				(MibSParams::feasCheckSolver));
+    double timeLimit(localModel_->AlpsPar()->entry(AlpsParams::timeLimit));
+    double remainingTime(0.0);
     
     OsiSolverInterface * oSolver = localModel_->solver();
+    MibSBilevel *bS = localModel_->bS_;
     int i(0);
     int numCols(oSolver->getNumCols());
     int uN(localModel_->getUpperDim());
     int lN(localModel_->getLowerDim());
     double objVal(0.0);
+    double startTimeUB(0.0);
     int * fixedInd = localModel_->getFixedInd();
     
     int useLinkingSolutionPool(localModel_->MibSPar_->entry
@@ -830,25 +1565,20 @@ MibSCutGenerator::storeBestSolIntersectionCutType2(const double* lpSol,
 	}
     }
     
-    OsiSolverInterface *UBSolver = 0;
-    if(UBSolver){
-	delete UBSolver;
+    OsiSolverInterface *UBSolver;
+    
+    if(bS->UBSolver_){
+	bS->UBSolver_ = bS->setUpUBModel(localModel_->getSolver(), optLowerObj, false);
     }
-    UBSolver = localModel_->bS_->setUpUBModel(localModel_->getSolver(), optLowerObj, true);
-    /*#ifndef COIN_HAS_SYMPHONY
-    dynamic_cast<OsiCbcSolverInterface *>
-	(UBSolver)->getModelPtr()->messageHandler()->setLogLevel(0);
-#else
-    dynamic_cast<OsiSymSolverInterface *>
-	(UBSolver)->setSymParam("prep_level", -1);
-    
-    dynamic_cast<OsiSymSolverInterface *>
-	(UBSolver)->setSymParam("verbosity", -2);
-    
-    dynamic_cast<OsiSymSolverInterface *>
-	(UBSolver)->setSymParam("max_active_nodes", 1);
-	#endif*/
+    else{
+	bS->UBSolver_ = bS->setUpUBModel(localModel_->getSolver(), optLowerObj, true);
+    }
 
+    UBSolver = bS->UBSolver_;
+
+    remainingTime = timeLimit - localModel_->broker_->subTreeTimer().getTime();
+    remainingTime = CoinMax(remainingTime, 0.00);
+    
     if (feasCheckSolver == "Cbc"){
 	dynamic_cast<OsiCbcSolverInterface *>
 	    (UBSolver)->getModelPtr()->messageHandler()->setLogLevel(0);
@@ -859,18 +1589,8 @@ MibSCutGenerator::storeBestSolIntersectionCutType2(const double* lpSol,
 	
 	sym_environment *env = dynamic_cast<OsiSymSolverInterface *>
 	    (UBSolver)->getSymphonyEnvironment();
-	if (warmStartLL){
-	    sym_set_int_param(env, "keep_warm_start", TRUE);
-	    if (probType == 1){ //Interdiction
-		sym_set_int_param(env, "should_use_rel_br", FALSE);
-		sym_set_int_param(env, "use_hot_starts", FALSE);
-		sym_set_int_param(env, "should_warmstart_node", TRUE);
-		sym_set_int_param(env, "sensitivity_analysis", TRUE);
-		sym_set_int_param(env, "sensitivity_bounds", TRUE);
-		sym_set_int_param(env, "set_obj_upper_lim", FALSE);
-	    }
-	}
 	//Always uncomment for debugging!!
+	sym_set_dbl_param(env, "time_limit", remainingTime);
 	sym_set_int_param(env, "do_primal_heuristic", FALSE);
 	sym_set_int_param(env, "verbosity", -2);
 	sym_set_int_param(env, "prep_level", -1);
@@ -908,10 +1628,18 @@ MibSCutGenerator::storeBestSolIntersectionCutType2(const double* lpSol,
 #endif
     }
 
+    startTimeUB = localModel_->broker_->subTreeTimer().getTime(); 
     UBSolver->branchAndBound();
+    localModel_->timerUB_ += localModel_->broker_->subTreeTimer().getTime() - startTimeUB;
     localModel_->counterUB_ ++;
-    
-    if(UBSolver->isProvenOptimal()){
+
+    if((feasCheckSolver == "SYMPHONY") && (sym_is_time_limit_reached
+					   (dynamic_cast<OsiSymSolverInterface *>
+					    (UBSolver)->getSymphonyEnvironment()))){
+	isTimeLimReached = true;
+	bS->shouldPrune_ = true;
+    }
+    else if(UBSolver->isProvenOptimal()){
 	MibSSolution *mibsSol = new MibSSolution(numCols,
 						 UBSolver->getColSolution(),
 						 UBSolver->getObjValue(),
@@ -925,7 +1653,7 @@ MibSCutGenerator::storeBestSolIntersectionCutType2(const double* lpSol,
 	    objVal = 10000000;
 	}
 
-    if(useLinkingSolutionPool){
+    if((useLinkingSolutionPool) && (isTimeLimReached == false)){
 	//Add to linking solution pool
 	//localModel_->it = localModel_->seenLinkingSolutions.find(linkSol);
 	//localModel_->it->second.tag = MibSSetETagUBIsSolved;
@@ -947,9 +1675,8 @@ MibSCutGenerator::storeBestSolIntersectionCutType2(const double* lpSol,
 
 //#############################################################################
 void
-MibSCutGenerator::getAlphaIntersectionCutType2(double** extRay,
-					       int numStruct, int numNonBasic,
-					       std::vector<double> &alphaVec)
+MibSCutGenerator::getAlphaHypercubeIC(double** extRay, int numStruct, int numNonBasic,
+				      std::vector<double> &alphaVec)
 {
     int * fixedInd = localModel_->getFixedInd();
     double etol(localModel_->etol_);
@@ -963,20 +1690,20 @@ MibSCutGenerator::getAlphaIntersectionCutType2(double** extRay,
 	for(j = 0; j < numStruct; j++){
 	    if(fixedInd[j] == 1){
 		coeff = extRay[i][j];
-	    }
-	    if(coeff > etol){
-		mult = 1;
-	    }
-	    else if(coeff < -1*etol){
-		mult = -1;
-	    }
-	    if(fabs(coeff) > etol){
-		tmp = (mult/coeff);
-		if(alphaVec[i] < 0){
-		    alphaVec[i] = tmp;
+	        if(coeff > etol){
+		    mult = 1;
 		}
-		else if(alphaVec[i] > tmp){
-		    alphaVec[i] = tmp;
+	        else if(coeff < -1*etol){
+		    mult = -1;
+		}
+	        if(fabs(coeff) > etol){
+		    tmp = (mult/coeff);
+		    if(alphaVec[i] < 0){
+			alphaVec[i] = tmp;
+		    }
+		    else if(alphaVec[i] > tmp){
+			alphaVec[i] = tmp;
+		    }
 		}
 	    }
 	}
@@ -985,8 +1712,7 @@ MibSCutGenerator::getAlphaIntersectionCutType2(double** extRay,
 
 //#############################################################################
 void
-MibSCutGenerator::storeBestSolIntersectionCutType3(const double* lpSol,
-						   double optLowerObj)
+MibSCutGenerator::storeBestSolTenderIC(const double* lpSol, double optLowerObj)
 {
 
     std::string feasCheckSolver =
@@ -1172,8 +1898,8 @@ MibSCutGenerator::storeBestSolIntersectionCutType3(const double* lpSol,
 
 //#############################################################################
 void
-MibSCutGenerator::getAlphaIntersectionCutType3(double** extRay, int numNonBasic,
-					       std::vector<double> &alphaVec)
+MibSCutGenerator::getAlphaTenderIC(double** extRay, int numNonBasic,
+				   std::vector<double> &alphaVec)
 {
     OsiSolverInterface * hSolver = localModel_->solver();
     const CoinPackedMatrix * matrix = hSolver->getMatrixByRow();
@@ -1256,6 +1982,12 @@ MibSCutGenerator::boundCuts(BcpsConstraintPool &conPool)
    std::string feasCheckSolver
       = localModel_->MibSPar_->entry(MibSParams::feasCheckSolver);
 
+   int problemType
+      = localModel_->MibSPar_->entry(MibSParams::bilevelProblemType);
+
+   bool allowRemoveCut(localModel_->MibSPar_->entry
+		       (MibSParams::allowRemoveCut));
+   
    if (localModel_->boundingPass_ > 1){
       return 0;
    }
@@ -1270,6 +2002,8 @@ MibSCutGenerator::boundCuts(BcpsConstraintPool &conPool)
    int * lColIndices = localModel_->getLowerColInd();
    int uCols(localModel_->getUpperDim());
    int * uColIndices = localModel_->getUpperColInd();
+   double * origColLb = localModel_->getOrigColLb();
+   double * origColUb = localModel_->getOrigColUb();
    int i(0), index(0);
    
    OsiSolverInterface * oSolver = localModel_->getSolver();
@@ -1281,7 +2015,7 @@ MibSCutGenerator::boundCuts(BcpsConstraintPool &conPool)
    CoinIotaN(indDel, auxCols,numCols);
    matrix.deleteCols(auxCols, indDel);
 
-   int tCols(oSolver->getNumCols());
+   int tCols(numCols);
    double * nObjCoeffs = new double[tCols];
    
    CoinZeroN(nObjCoeffs, tCols);
@@ -1294,6 +2028,7 @@ MibSCutGenerator::boundCuts(BcpsConstraintPool &conPool)
    int numCuts(0);
    double objval = -oSolver->getInfinity();
    double lower_objval = -oSolver->getInfinity();
+   char * colType = new char[tCols];
 
    if (boundCutOptimal){
 
@@ -1302,23 +2037,29 @@ MibSCutGenerator::boundCuts(BcpsConstraintPool &conPool)
       boundModel->setSolver(&lpSolver);
       boundModel->AlpsPar()->setEntry(AlpsParams::msgLevel, -1);
       boundModel->AlpsPar()->setEntry(AlpsParams::timeLimit, 10);
-      char * colType;
-      if (boundCutRelaxUpper){
-	 colType = new char[tCols];
-	 memcpy(colType, localModel_->colType_, tCols);
-	 for (i = 0; i < uCols; i++){
-	    colType[uColIndices[i]] = 'C';
-	 }
-      }else{
-	 colType = localModel_->colType_;
-      }
+      boundModel->BlisPar()->setEntry(BlisParams::heurStrategy, 0);
+      boundModel->MibSPar()->setEntry(MibSParams::feasCheckSolver, feasCheckSolver.c_str());
+      boundModel->MibSPar()->setEntry(MibSParams::bilevelCutTypes, 0);
+      boundModel->MibSPar()->setEntry(MibSParams::printProblemInfo, false);
 
-      boundModel->loadProblemData(matrix,
-				  oSolver->getColLower(), oSolver->getColUpper(),
-				  nObjCoeffs,
-				  oSolver->getRowLower(), oSolver->getRowUpper(),
-				  colType, 1.0, oSolver->getInfinity(),
-				  oSolver->getRowSense());
+      double *colUpper = new double[tCols];
+      double *colLower = new double[tCols];
+      memcpy(colLower, oSolver->getColLower(), sizeof(double) * tCols);
+      memcpy(colUpper, oSolver->getColUpper(), sizeof(double) * tCols);
+      memcpy(colType, localModel_->colType_, tCols);
+
+      double *lColLbInLProb = new double[lCols];
+      double *lColUbInLProb = new double[lCols];
+      for(i = 0; i < lCols; i++){
+	  index = lColIndices[i];
+	  lColLbInLProb[i] = origColLb[index];
+	  lColUbInLProb[i] = origColUb[index];
+      }
+      
+      //interdiction problems
+      if(problemType == 1){
+	  boundModel->isInterdict_ = true;
+      }
       
       boundModel->loadAuxiliaryData(localModel_->getLowerDim(),
 				    localModel_->getLowerRowNum(),
@@ -1332,7 +2073,12 @@ MibSCutGenerator::boundCuts(BcpsConstraintPool &conPool)
 				    localModel_->getUpperRowInd(),
 				    localModel_->structRowNum_,
 				    localModel_->structRowInd_,
-				    0, NULL);
+				    0, NULL, lColLbInLProb, lColUbInLProb);
+
+      boundModel->loadProblemData(matrix, colLower, colUpper, nObjCoeffs,
+				  oSolver->getRowLower(), oSolver->getRowUpper(),
+				  colType, 1.0, oSolver->getInfinity(),
+				  oSolver->getRowSense());
       
       delete[] indDel;
       
@@ -1346,18 +2092,6 @@ MibSCutGenerator::boundCuts(BcpsConstraintPool &conPool)
       AlpsKnowledgeBrokerSerial broker(argc, argv, *boundModel);
 #endif
       
-      boundModel->MibSPar()->setEntry(MibSParams::bilevelCutTypes, 0);
-      if (boundCutRelaxUpper){
-	 boundModel->MibSPar()->setEntry(MibSParams::usePureIntegerCut, false);
-      }
-      boundModel->MibSPar()->setEntry(MibSParams::feasCheckSolver, feasCheckSolver.c_str());
-      //boundModel->MibSPar()->setEntry(MibSParams::useBendersCut, true);
-      
-      boundModel->MibSPar()->setEntry(MibSParams::useLowerObjHeuristic, false);
-      boundModel->MibSPar()->setEntry(MibSParams::useObjCutHeuristic, false);
-      boundModel->MibSPar()->setEntry(MibSParams::useWSHeuristic, false);
-      boundModel->MibSPar()->setEntry(MibSParams::useGreedyHeuristic, false);
-      
       broker.search(boundModel);
       
       if (boundModel->getNumSolutions() > 0){
@@ -1367,16 +2101,27 @@ MibSCutGenerator::boundCuts(BcpsConstraintPool &conPool)
       broker.printBestSolution();
       objval = boundModel->getKnowledgeBroker()->getBestQuality();
       if (broker.getBestNode()){
-	 lower_objval = broker.getBestNode()->getQuality();
+	  lower_objval = broker.getBestNode()->getQuality();
       }else{
-	 lower_objval = objval;
+	  lower_objval = objval;
       }
-      //delete boundModel;
+
+      delete [] colLower;
+      delete [] colUpper;
+      delete [] lColLbInLProb;
+      delete [] lColUbInLProb;
+      delete boundModel;
+      
    }else if (localModel_->getNumSolutions() > 0){
       //Change this when we actually add a cut
       //double objval;
       //double objval(boundModel.getKnowledgeBroker()->getBestQuality());
-      
+       
+       memcpy(colType, localModel_->colType_, tCols);
+       for (i = 0; i < uCols; i++){
+	   colType[uColIndices[i]] = 'C';
+       }
+	   
       //Create new upperbound for lower level variables (to fix them) 
       BlisSolution* blisSol = dynamic_cast<BlisSolution*>(
 	  localModel_->getKnowledgeBroker()->getBestKnowledge(
@@ -1418,7 +2163,7 @@ MibSCutGenerator::boundCuts(BcpsConstraintPool &conPool)
 				      localModel_->getUpperRowInd(),
 				      localModel_->structRowNum_,
 				      localModel_->structRowInd_,
-				      0, NULL);
+				      0, NULL, NULL, NULL);
       NewboundModel.loadProblemData(matrix,
 				    oSolver->getColLower(), NewColUpper,
 				    nObjCoeffs,
@@ -1472,10 +2217,13 @@ MibSCutGenerator::boundCuts(BcpsConstraintPool &conPool)
 	 valsList.push_back(-lObjSense *lObjCoeffs[i]);
       }
       numCuts += addCut(conPool, lower_objval, cutub, indexList, valsList,
-			false);
+			allowRemoveCut);
       indexList.clear();
       valsList.clear();
    }
+
+   delete [] colType;
+   delete [] nObjCoeffs;
 
    return numCuts;
 }
@@ -1490,9 +2238,13 @@ MibSCutGenerator::generalNoGoodCut(BcpsConstraintPool &conPool)
     //std::cout << "Generating No-Good Cuts." << std::endl;
     int useLinkingSolutionPool(localModel_->MibSPar_->entry
 		   (MibSParams::useLinkingSolutionPool));
+
+    bool allowRemoveCut(localModel_->MibSPar_->entry
+			(MibSParams::allowRemoveCut));
     
     OsiSolverInterface * solver = localModel_->solver();
 
+    bool isTimeLimReached(false);
     int numCuts(0);
     double etol(localModel_->etol_);
     const double * sol = solver->getColSolution();
@@ -1522,12 +2274,16 @@ MibSCutGenerator::generalNoGoodCut(BcpsConstraintPool &conPool)
 
     
     if(shouldFindBestSol == true){
-	storeBestSolIntersectionCutType2(sol, bS->objVal_);
+	storeBestSolHypercubeIC(sol, bS->objVal_, isTimeLimReached);
     }
 
+    if(isTimeLimReached == true){
+	goto TERM_GENERALNOGOOD;
+    }	
+
     for(i = 0; i < uN; i++){
-	if(fixedInd[i] == 1){
-	    index = upperColInd[i];
+	index = upperColInd[i];
+	if(fixedInd[index] == 1){
 	    indexList.push_back(index);
 	    if(sol[index] > etol){
 		valsList.push_back(1.0);
@@ -1541,7 +2297,9 @@ MibSCutGenerator::generalNoGoodCut(BcpsConstraintPool &conPool)
 
     assert(indexList.size() == valsList.size());
 
-    numCuts += addCut(conPool, cutlb, cutub, indexList, valsList, false);
+    numCuts += addCut(conPool, cutlb, cutub, indexList, valsList, allowRemoveCut);
+
+    TERM_GENERALNOGOOD:
 
     return numCuts;
 
@@ -3087,11 +3845,209 @@ MibSCutGenerator::interdictionCuts(BcpsConstraintPool &conPool)
 #endif
 
   if (useBendersCut){
-     numCuts += bendersInterdictionCuts(conPool);
+      numCuts += bendersInterdictionMultipleCuts(conPool);
   }
 
   return numCuts;
 
+}
+
+//#############################################################################
+int
+MibSCutGenerator::generalWeakIncObjCutCurrent(BcpsConstraintPool &conPool)
+{
+    bool allowRemoveCut(localModel_->MibSPar_->entry
+			(MibSParams::allowRemoveCut));
+    
+    OsiSolverInterface *solver = localModel_->solver();
+    int i;
+    int index(0);
+    int numCuts(0);
+    double cutub(0.0), cutlb(-solver->getInfinity()), bigM(0.0);
+    double lObjVal(localModel_->bS_->objVal_);
+    //double bigM(10000);
+    double etol(localModel_->etol_);
+    int uN(localModel_->getUpperDim());
+    int lN(localModel_->getLowerDim());
+    int *fixedInd(localModel_->getFixedInd());
+    int *upperColInd(localModel_->getUpperColInd());
+    int *lowerColInd(localModel_->getLowerColInd());
+    double *lObjCoeffs(localModel_->getLowerObjCoeffs());
+    double lowerObjSense(localModel_->getLowerObjSense());
+    const double *sol(solver->getColSolution());
+
+    std::vector<int> indexList;
+    std::vector<double> valsList;
+
+    if(!isBigMIncObjSet_){
+    bigMIncObj_ = findBigMIncObjCut();
+    isBigMIncObjSet_ = true;
+    }
+
+    bigM = bigMIncObj_ - lObjVal + 1;
+
+    for(i = 0; i < uN; i++){
+	index = upperColInd[i];
+	if((fixedInd[index] == 1) && (sol[index] < etol)){
+	    indexList.push_back(index);
+	    valsList.push_back(-bigM);
+	}
+    }
+
+    for(i = 0; i < lN; i++){
+	index = lowerColInd[i];
+	if(fabs(lObjCoeffs[i]) > etol){
+	    indexList.push_back(index);
+	    valsList.push_back(lowerObjSense * lObjCoeffs[i]);
+	}
+    }
+
+    cutub = lObjVal;
+
+    assert(indexList.size() == valsList.size());
+    numCuts += addCut(conPool, cutlb, cutub, indexList, valsList, allowRemoveCut);
+
+    return numCuts;
+
+}
+
+//#############################################################################
+double
+MibSCutGenerator::findBigMIncObjCut()
+{
+
+    std::string feasCheckSolver =
+	localModel_->MibSPar_->entry(MibSParams::feasCheckSolver);
+
+    int maxThreadsLL = localModel_->MibSPar_->entry
+	(MibSParams::maxThreadsLL);
+
+    int whichCutsLL = localModel_->MibSPar_->entry
+		    (MibSParams::whichCutsLL);
+    
+    OsiSolverInterface *oSolver = localModel_->solver();
+
+    int i(0);
+    int intCnt(0), colIndex(0);
+    double bigM(0.0);
+    int colNum(localModel_->getNumOrigVars());
+    int lCols(localModel_->getLowerDim());
+    double lObjSense(localModel_->getLowerObjSense());
+    int *lowerColInd(localModel_->getLowerColInd());
+    double *lObjCoeffs(localModel_->getLowerObjCoeffs());
+    
+    OsiSolverInterface * nSolver;
+    double *objCoeffs = new double[colNum];
+    int *integerVars = new int[colNum];
+    CoinFillN(objCoeffs, colNum, 0.0);
+    CoinFillN(integerVars, colNum, 0);
+
+    if (feasCheckSolver == "Cbc"){
+	nSolver = new OsiCbcSolverInterface();
+    }else if (feasCheckSolver == "SYMPHONY"){
+#ifdef COIN_HAS_SYMPHONY
+	nSolver = new OsiSymSolverInterface();
+#else
+	throw CoinError("SYMPHONY chosen as solver, but it has not been enabled",
+			"findBigMIncObjCut", "MibSCutGenerator");
+#endif
+    }else if (feasCheckSolver == "CPLEX"){
+#ifdef COIN_HAS_CPLEX
+	nSolver = new OsiCpxSolverInterface();
+#else
+	throw CoinError("CPLEX chosen as solver, but it has not been enabled",
+			"findBigMIncObjCut", "MibSCutGenerator");
+#endif
+    }else{
+	throw CoinError("Unknown solver chosen",
+			"findBigMIncObjCut", "MibSCutGenerator");
+    }
+
+    CoinPackedMatrix matrix = *localModel_->origConstCoefMatrix_;
+
+    for(i = 0; i < colNum; i++){
+	if(oSolver->isInteger(i)){
+	    integerVars[intCnt] = i;
+	    intCnt ++;
+	}
+    }
+
+    for(i = 0; i < lCols; i++){
+	colIndex = lowerColInd[i];
+	objCoeffs[colIndex] = lObjCoeffs[i] * lObjSense;
+    }
+	
+
+    nSolver->loadProblem(matrix, localModel_->getOrigColLb(), localModel_->getOrigColUb(),
+			 objCoeffs, localModel_->getOrigRowLb(), localModel_->getOrigRowUb());
+
+    for(i = 0; i < intCnt; i++){
+	nSolver->setInteger(integerVars[i]);
+    }
+
+    nSolver->setObjSense(-1); //1 min; -1 max
+
+    nSolver->setHintParam(OsiDoReducePrint, true, OsiHintDo);
+
+    if (feasCheckSolver == "Cbc"){
+	    dynamic_cast<OsiCbcSolverInterface *>
+		(nSolver)->getModelPtr()->messageHandler()->setLogLevel(0);
+    }else if (feasCheckSolver == "SYMPHONY"){
+#if COIN_HAS_SYMPHONY
+	    sym_environment *env = dynamic_cast<OsiSymSolverInterface *>
+		(nSolver)->getSymphonyEnvironment();
+	    //Always uncomment for debugging!!
+	    sym_set_int_param(env, "do_primal_heuristic", FALSE);
+	    sym_set_int_param(env, "verbosity", -2);
+	    sym_set_int_param(env, "prep_level", -1);
+	    sym_set_int_param(env, "max_active_nodes", maxThreadsLL);
+	    sym_set_int_param(env, "tighten_root_bounds", FALSE);
+	    sym_set_int_param(env, "max_sp_size", 100);
+	    sym_set_int_param(env, "do_reduced_cost_fixing", FALSE);
+	    if (whichCutsLL == 0){
+		sym_set_int_param(env, "generate_cgl_cuts", FALSE);
+	    }else{
+		sym_set_int_param(env, "generate_cgl_gomory_cuts", GENERATE_DEFAULT);
+	    }
+	    if (whichCutsLL == 1){
+		sym_set_int_param(env, "generate_cgl_knapsack_cuts",
+				  DO_NOT_GENERATE);
+		sym_set_int_param(env, "generate_cgl_probing_cuts",
+				  DO_NOT_GENERATE);
+		sym_set_int_param(env, "generate_cgl_clique_cuts",
+				  DO_NOT_GENERATE);
+		sym_set_int_param(env, "generate_cgl_twomir_cuts",
+				  DO_NOT_GENERATE);
+		sym_set_int_param(env, "generate_cgl_flowcover_cuts",
+				  DO_NOT_GENERATE);
+	    }
+#endif
+    }else if (feasCheckSolver == "CPLEX"){
+#ifdef COIN_HAS_CPLEX
+	nSolver->setHintParam(OsiDoReducePrint);
+	nSolver->messageHandler()->setLogLevel(0);
+	    CPXENVptr cpxEnv =
+		dynamic_cast<OsiCpxSolverInterface*>(nSolver)->getEnvironmentPtr();
+	    assert(cpxEnv);
+	    CPXsetintparam(cpxEnv, CPX_PARAM_SCRIND, CPX_OFF);
+	    CPXsetintparam(cpxEnv, CPX_PARAM_THREADS, maxThreadsLL);
+#endif
+    }
+
+    nSolver->branchAndBound();
+    
+    if (nSolver->isProvenOptimal()){
+	bigM = nSolver->getObjValue();
+    }
+    else{
+	assert(0);
+    }
+
+    delete nSolver;
+    delete [] objCoeffs;
+    delete [] integerVars;
+
+    return bigM;
 }
 
 //#############################################################################
@@ -3673,13 +4629,72 @@ MibSCutGenerator::noGoodCut(BcpsConstraintPool &conPool)
 
 //###########################################################################
 int
-MibSCutGenerator::bendersInterdictionCuts(BcpsConstraintPool &conPool)
+MibSCutGenerator::bendersInterdictionOneCut(BcpsConstraintPool &conPool, double *lSolution)
+{
+
+  MibSBranchingStrategy branchPar = static_cast<MibSBranchingStrategy>
+      (localModel_->MibSPar_->entry(MibSParams::branchStrategy));
+
+  bool allowRemoveCut(localModel_->MibSPar_->entry(MibSParams::allowRemoveCut));
+
+  //when the branching strategy is fractional and the optimal
+  //solution of relaxation is integer, we are forced to generate cut.
+  /*if(branchPar != MibSBranchingStrategyFractional){
+      if (localModel_->boundingPass_ > 1){
+	  return 0;
+      }
+  }*/
+
+  int i;
+  int indexU(0), indexL(0);
+  int numCuts(0);
+  double etol(localModel_->etol_);
+  int uN(localModel_->upperDim_);
+  int * upperColInd = localModel_->getUpperColInd();
+  int * lowerColInd = localModel_->getLowerColInd();
+  double * lObjCoeffs = localModel_->getLowerObjCoeffs();
+  double cutub(localModel_->solver()->getInfinity());
+  double cutlb(0.0);
+  std::vector<int> indexList;
+  std::vector<double> valsList;
+
+  for(i = 0; i < uN; i++){
+      indexU = upperColInd[i];
+      indexL = lowerColInd[i];
+      indexList.push_back(indexL);
+      valsList.push_back(-lObjCoeffs[i]);
+      cutlb += -1 * lObjCoeffs[i] * lSolution[i];
+      if(lSolution[i] > etol){
+	  indexList.push_back(indexU);
+	  valsList.push_back(-lObjCoeffs[i]*lSolution[i]);
+      }
+  }
+  assert(indexList.size() == valsList.size());
+  numCuts += addCut(conPool, cutlb, cutub, indexList, valsList, allowRemoveCut);
+
+  indexList.clear();
+  valsList.clear();
+
+  return numCuts;
+}
+
+//###########################################################################
+int
+MibSCutGenerator::bendersInterdictionMultipleCuts(BcpsConstraintPool &conPool)
 {
 
   /** Add specialized bilevel feasibility cuts, as appropriate **/
+  MibSBranchingStrategy branchPar = static_cast<MibSBranchingStrategy>
+      (localModel_->MibSPar_->entry(MibSParams::branchStrategy));
 
-  if (localModel_->boundingPass_ > 1){
-     return 0;
+  bool allowRemoveCut(localModel_->MibSPar_->entry(MibSParams::allowRemoveCut));
+
+  //when the branching strategy is fractional and the optimal
+  //solution of relaxation is integer, we are forced to generate cut.
+  if(branchPar != MibSBranchingStrategyFractional){
+      if (localModel_->boundingPass_ > 1){
+	  return 0;
+      }
   }
    
   OsiSolverInterface * solver = localModel_->solver();
@@ -3755,18 +4770,19 @@ MibSCutGenerator::bendersInterdictionCuts(BcpsConstraintPool &conPool)
 	if (sol[indexL] > etol){
 	   indexList.push_back(indexU);
 	   valsList.push_back(-lObjCoeffs[j]*sol[indexL]);
-	   lhs -= lObjCoeffs[j]*lpSol[indexU];
+	   //lhs -= lObjCoeffs[j]*lpSol[indexU];
+	   lhs -= lObjCoeffs[j]*sol[indexL]*lpSol[indexU];
 	}
      }
      assert(indexList.size() == valsList.size());
-     if (lhs < objval){
-	numCuts += addCut(conPool, objval, cutub, indexList, valsList, 
-			  false);
+     if (lhs - objval < -etol){
+	 numCuts += addCut(conPool, objval, cutub, indexList, valsList,
+			   allowRemoveCut);
      }
      indexList.clear();
      valsList.clear();
   }
-
+  
   return numCuts;
 
 }
@@ -3895,14 +4911,26 @@ MibSCutGenerator::generateConstraints(BcpsConstraintPool &conPool)
 
 	  if (useGeneralNoGoodCut == PARAM_ON){
 	      generalNoGoodCut(conPool);
-			}
+	  }
+	  
 	  if (useBendersCut == PARAM_ON){
-	      numCuts += bendersInterdictionCuts(conPool);
+	      int bendersCutType =
+		  localModel_->MibSPar_->entry(MibSParams::bendersCutType);
+	      if(bendersCutType == MibSBendersCutTypeJustOneCut){
+		  numCuts += bendersInterdictionOneCut(conPool,
+						       bS->optLowerSolutionOrd_);
+	      }
+	      else{
+		  numCuts += bendersInterdictionMultipleCuts(conPool);
+	      }		  
 	  }
+	  
 	  if (useIncObjCut == true){
-	      numCuts += weakIncObjCutCurrent(conPool);
+	      numCuts += generalWeakIncObjCutCurrent(conPool);
 	  }
+	  
 	 numCuts += feasibilityCuts(conPool) ? true : false;
+	 
          if (useBoundCut){
 	     boundCuts(conPool);
 	 }
@@ -4344,5 +5372,105 @@ MibSCutGenerator::getBindingConsBasis()
   setCutUpperBound(upper);
   
   return binding;
+
+}
+
+//#############################################################################
+void
+MibSCutGenerator::getLowerMatrices(bool getLowerConstCoefMatrix,
+				   bool getA2Matrix, bool getG2Matrix)
+{
+    bool isLowerConstCoefMatrixSet(false), isMatrixA2Set(false), isMatrixG2Set(false);
+    int i, j;
+    int index(0), numElements(0), pos(0);
+    int numCols(localModel_->getNumCols());
+    int uCols(localModel_->getUpperDim());
+    int lCols(localModel_->getLowerDim());
+    int lRows(localModel_->getLowerRowNum());
+    int *uColInd(localModel_->getUpperColInd());
+    int *lColInd(localModel_->getLowerColInd());
+    int *lRowInd(localModel_->getLowerRowInd());
+    char *rowSense = localModel_->getOrigRowSense();
+    CoinPackedMatrix origMatrix = *localModel_->getOrigConstCoefMatrix();
+
+    CoinShallowPackedVector origRow;
+    CoinPackedVector row;
+    CoinPackedVector rowA2;
+    CoinPackedVector rowG2;
+    CoinPackedMatrix *matrixA2G2 = 0;
+    CoinPackedMatrix *matrixA2 = 0;
+    CoinPackedMatrix *matrixG2 = 0;
+
+    if(localModel_->getLowerConstCoefMatrix()){
+	isLowerConstCoefMatrixSet = true;
+    }
+
+    if(localModel_->getA2Matrix()){
+	isMatrixA2Set = true;
+    }
+
+    if(localModel_->getG2Matrix()){
+	isMatrixG2Set =true;
+    }
+    
+    origMatrix.reverseOrdering();
+    if((getLowerConstCoefMatrix) && (!isLowerConstCoefMatrixSet)){
+	matrixA2G2 = new CoinPackedMatrix(false, 0, 0);
+	matrixA2G2->setDimensions(0, numCols);
+    }
+    if((getA2Matrix) && (!isMatrixA2Set)){
+	matrixA2 = new CoinPackedMatrix(false, 0, 0);
+        matrixA2->setDimensions(0, uCols);
+    }
+    if((getG2Matrix) && (!isMatrixG2Set)){
+	matrixG2 = new CoinPackedMatrix(false, 0, 0);
+	matrixG2->setDimensions(0, lCols);
+    }
+    
+    //extracting matrices A2G2, A2 and G2
+    for(i = 0; i < lRows; i++){
+	index = lRowInd[i];
+	origRow = origMatrix.getVector(index);
+	if(rowSense[index] == 'G'){
+	    row = -1 * origRow;
+	}
+	else{
+	    row = origRow;
+	}
+	if(matrixA2G2){
+	    matrixA2G2->appendRow(row);
+	}
+	numElements = row.getNumElements();
+	const int *indices = row.getIndices();
+	const double *elements = row.getElements();
+	for(j = 0; j < numElements; j++){
+	    pos = localModel_->binarySearch(0, uCols -1, indices[j], uColInd);
+	    if(pos >= 0){
+		rowA2.insert(pos, elements[j]);
+	    }
+	    else{
+		pos = localModel_->binarySearch(0, lCols -1, indices[j], lColInd);
+		rowG2.insert(pos, elements[j]);
+	    }
+	}
+	if(matrixA2){
+	    matrixA2->appendRow(rowA2);
+	}
+	if(matrixG2){
+	    matrixG2->appendRow(rowG2);
+	}
+	rowA2.clear();
+	rowG2.clear();
+    }
+
+    if((getLowerConstCoefMatrix) && (matrixA2G2)){
+	localModel_->setLowerConstCoefMatrix(matrixA2G2);
+    }
+    if((getA2Matrix) && (matrixA2)){
+	localModel_->setA2Matrix(matrixA2);
+    }
+    if((getG2Matrix) && (matrixG2)){
+	localModel_->setG2Matrix(matrixG2);
+    }
 
 }

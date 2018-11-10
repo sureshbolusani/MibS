@@ -28,7 +28,15 @@
 #define PARAM_OFF      0
 #define PARAM_ON       1
 
-//#############################################################################    
+//#############################################################################
+
+enum MibSSolType{
+    MibSNoSol = -1,
+    MibSRelaxationSol,
+    MibSHeurSol
+};
+
+//#############################################################################
 
 enum MibSBranchingStrategy{
     MibSBranchingStrategyNotSet = -1,
@@ -51,9 +59,35 @@ enum MibSLinkingPoolTag{
     MibSLinkingPoolTagLowerIsInfeasible,
     MibSLinkingPoolTagLowerIsFeasible,
     MibSLinkingPoolTagUBIsSolved
-};  
+};
 
-//############################################################################# 
+//#############################################################################
+
+enum MibSBendersCutType{
+    MibSBendersCutTypeJustOneCut = 0,
+    MibSBendersCutTypeMultipleCuts
+};
+
+//#############################################################################
+
+enum MibSIntersectionCutType{
+    MibSIntersectionCutTypeNotSet = 0,
+    MibSIntersectionCutTypeIC,
+    MibSIntersectionCutTypeWatermelon,
+    MibSIntersectionCutTypeHypercubeIC,
+    MibSIntersectionCutTypeTenderIC,
+    MibSIntersectionCutTypeHybridIC
+};
+
+//#############################################################################
+
+enum MibSBilevelFreeSetTypeIC{
+    MibSBilevelFreeSetTypeICNotSet = -1,
+    MibSBilevelFreeSetTypeICWithLLOptSol,
+    MibSBilevelFreeSetTypeICWithNewLLSol
+};
+
+//#############################################################################
 /*---------  which_active_con_method choices --------------------------------*/
 #define SIMPLE  0
 #define BASIS  1

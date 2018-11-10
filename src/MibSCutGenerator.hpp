@@ -28,7 +28,10 @@ class MibSCutGenerator : public BlisConGenerator {
    double upper_;
    int auxCount_;
    int maximalCutCount_;
-   
+   bool isBigMIncObjSet_;
+   double bigMIncObj_;
+   OsiSolverInterface * watermelonICSolver_;
+    
  public:
    
    /** Default Constructor **/
@@ -68,40 +71,51 @@ class MibSCutGenerator : public BlisConGenerator {
    int generalNoGoodCut(BcpsConstraintPool &conPool);
 
    /** Add Benders-type cuts for interdiction problems **/
-   int bendersInterdictionCuts(BcpsConstraintPool &conPool);
+   int bendersInterdictionOneCut(BcpsConstraintPool &conPool,
+				   double *lSolution);
+
+   int bendersInterdictionMultipleCuts(BcpsConstraintPool &conPool);
 
    /** Add Benders-type cuts for zero sum problems **/
    int bendersZeroSumCuts(BcpsConstraintPool &conPool);
 
-    /** Add intersection cuts for general problems (Type 1: discrete, Types 2,3: general) **/
+    /** Add intersection cuts for general problems (IC: discrete, hypercube, tender: general) **/
     int intersectionCuts(BcpsConstraintPool &conPool,
 			 double *optLowerSolution);
+    /** Helper function for IC*/
+    void findLowerLevelSol(double *uselessIneqs, double *lowerLevelSol, const double *sol,
+			   bool &isTimeLimReached);
 
-    /** Helper function for intersection cut Type 1*/
-    void getAlphaIntersectionCutType1(double** extRay, double* lowerSolution,
-				      int numStruct, int numNonBasic,
-				      const double* lpSol, std::vector<double> &alphaVec);
+    /** Helper function for IC*/
+    bool getAlphaIC(double** extRay, double *uselessIneqs, double* lowerSolution, int numStruct,
+		    int numNonBasic, const double* lpSol, std::vector<double> &alphaVec);
 
-    /** Helper function for intersection cut Type 1*/
-    double solveModelIntersectionCutType1(const CoinPackedMatrix* matrix,
-					  double** extRay, double* rowLb,double* rowUb,
-					  int lRows, int numRows, int numNonBasic, int cnt);
+    /** Helper function for IC*/
+    double solveModelIC(double *uselessIneqs, double *ray, double *rhs, int numNonBasic);
 
-    /** Helper function for intersection cut Type 2*/
-    void storeBestSolIntersectionCutType2(const double* lpSol, double optLowerObj);
+    /** Helper function for watermelon IC **/
+    void findLowerLevelSolWatermelonIC(double *uselessIneqs, double *lowerLevelSol,
+				       double* lpSol, bool &isTimeLimReached);
 
-    /** Helper function for intersection cut Type 2*/
-    void getAlphaIntersectionCutType2(double** extRay,
-				      int numStruct, int numNonBasic,
-				      std::vector<double> &alphaVec);
+    /** Helper function for watermelon IC*/
+    bool getAlphaWatermelonIC(double** extRay, double *uselessIneqs, double* lowerSolution,
+			      int numStruct, int numNonBasic, double* lpSol,
+			      std::vector<double> &alphaVec);
 
-    /** Helper function for intersection cut Type 3*/
-    void storeBestSolIntersectionCutType3(const double* lpSol,
-					  double optLowerObj);
+    /** Helper function for hypercube IC*/
+    void storeBestSolHypercubeIC(const double* lpSol, double optLowerObj, bool &isTimeLimReached);
 
-    /** Helper function for intersection cut Type 3*/
-    void getAlphaIntersectionCutType3(double** extRay, int numNonBasic,
-				      std::vector<double> &alphaVec);
+    /** Helper function for hypercube IC*/
+    void getAlphaHypercubeIC(double** extRay, int numStruct, int numNonBasic,
+			     std::vector<double> &alphaVec);
+
+    /** Helper function for Tender IC*/
+    void storeBestSolTenderIC(const double* lpSol,
+			      double optLowerObj);
+
+    /** Helper function for Tender IC*/
+    void getAlphaTenderIC(double** extRay, int numNonBasic,
+			  std::vector<double> &alphaVec);
 		     
    /** Add bound cuts for general problems **/
    int boundCuts(BcpsConstraintPool &conPool);
@@ -114,6 +128,10 @@ class MibSCutGenerator : public BlisConGenerator {
 
    /** Add disjunctive cuts for binary upper-level variables (maximal sol) **/
    int incObjCutMaximal(BcpsConstraintPool &conPool);
+
+   int generalWeakIncObjCutCurrent(BcpsConstraintPool &conPool);
+
+   double findBigMIncObjCut();
 
    /** Add disjunctive cuts for binary upper-level variables (current sol)**/
    int weakIncObjCutCurrent(BcpsConstraintPool &conPool);
@@ -134,6 +152,9 @@ class MibSCutGenerator : public BlisConGenerator {
 
    /** old function, delete eventually **/
    double * findDeepestLandPCut1();//stable (but maybe wrong)
+
+   /** Store the matrices A2, G2 and lower-level coeffs (all constraints are 'L') **/
+   void getLowerMatrices(bool getLowerConstCoefMatrix, bool getA2Matrix, bool getG2Matrix);
    
  private:
 

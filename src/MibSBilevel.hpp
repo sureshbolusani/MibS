@@ -58,13 +58,13 @@ private:
     /** should prune the node or not **/
     bool shouldPrune_;
     bool isContainedInLinkingPool_;
-    bool haveHeurSolCand_;
     MibSLinkingPoolTag tagInSeenLinkingPool_;
 
     MibSLPSolStatus LPSolStatus_;
 
     /** Optimal value of LL objective **/
     double objVal_;
+    int linkIntegralCount_;
 
     double *upperSolutionOrd_;
     double *lowerSolutionOrd_;
@@ -74,7 +74,8 @@ private:
    
     MibSModel *model_;
     MibSHeuristic *heuristic_;
-    OsiSolverInterface * solver_; 
+    OsiSolverInterface * lSolver_;
+    OsiSolverInterface * UBSolver_;
     CoinWarmStart * ws_;
    
 public:
@@ -84,9 +85,9 @@ public:
 		    isLinkVarsFixed_(true), isProvenOptimal_(false),
 		    isLowerSolved_(false), isUBSolved_(false),
 		    shouldPrune_(false), isContainedInLinkingPool_(false),
-		    haveHeurSolCand_(false),
 		    tagInSeenLinkingPool_(MibSLinkingPoolTagIsNotSet),
-		    LPSolStatus_(MibSLPSolStatusUnknown), objVal_(0.0){
+		    LPSolStatus_(MibSLPSolStatusUnknown), objVal_(0.0),
+		    linkIntegralCount_(0){
 	upperSolutionOrd_ = 0;
 	lowerSolutionOrd_ = 0;
 	//optLowerSolution_ = 0;
@@ -94,7 +95,8 @@ public:
 	optLowerSolutionOrd_ = 0;
 	model_ = 0;
 	heuristic_= 0;
-	solver_ = 0;
+	lSolver_ = 0;
+	UBSolver_ = 0;
 	ws_ = 0;
     }
    
@@ -102,9 +104,9 @@ public:
 	gutsOfDestructor();
     }
    
-    void createBilevel(CoinPackedVector *sol,
+    MibSSolType createBilevel(CoinPackedVector *sol,
 		       MibSModel *mibs=0);
-    void checkBilevelFeasiblity(bool isRoot);
+    MibSSolType checkBilevelFeasiblity(bool isRoot);
     void gutsOfDestructor();
 
 private:
