@@ -1301,6 +1301,7 @@ int main(int argc, char* argv[])
               dualBoundOnSubproblem += coef1*ub;
               primalBoundOnSubproblem += coef1*lb;
           }
+          /*
           //Approach-1: Find dualBoundOnLevel2 w.r.t. simple box constraints on 'y'
           double coef2 = lowerObjCoef[i];
           if (coef2 < -etol) {
@@ -1308,9 +1309,8 @@ int main(int argc, char* argv[])
           } else if (coef2 > etol) {
               dualBoundOnLevel2 += coef2*ub;
           }
+          */
       }
-      /*
-      std::cout << "\n \t Approach-1 val = " << dualBoundOnLevel2 << "\n";
       //Approach-2: Find dualBoundOnLevel2 by solving a bilevel bounding problem
       {
           //Misc. parameters for bounding problem
@@ -1346,8 +1346,8 @@ int main(int argc, char* argv[])
           //New MibS model
           MibSModel *boundProbModel = new MibSModel();
           boundProbModel->setSolver(boundProbLpSolver);
-//          boundProbModel->AlpsPar()->setEntry(AlpsParams::msgLevel, -1);
-//          boundProbModel->AlpsPar()->setEntry(AlpsParams::timeLimit, 100);
+          boundProbModel->AlpsPar()->setEntry(AlpsParams::msgLevel, -1);
+          boundProbModel->AlpsPar()->setEntry(AlpsParams::timeLimit, 100);
 
           boundProbModel->loadAuxiliaryData(lowerColNum,
                   lowerRowNum,
@@ -1360,7 +1360,9 @@ int main(int argc, char* argv[])
                   upperColInd,
                   NULL,
                   0, NULL,
-                  0, NULL);
+                  0, NULL,
+                  &origColLb[upperColNum],
+                  &origColUb[upperColNum]);
 
           boundProbModel->loadProblemData(boundProbMat,
                   origColLb, origColUb,
@@ -1377,20 +1379,21 @@ int main(int argc, char* argv[])
 
           boundProbBroker.search(boundProbModel);
           assert(boundProbBroker.getSolStatus() != AlpsExitStatusInfeasible);
+          /*
           double *boundProbSolution;
           if (boundProbModel->getNumSolutions() > 0){
               boundProbSolution = boundProbModel->incumbent();
           }
+          */
 
           dualBoundOnLevel2 = -1.0 * boundProbModel->getKnowledgeBroker()->getBestQuality();
-          assert(dualBoundOnLevel2 >= -etol);
+          /*
           if (boundProbBroker.getBestNode()) {
               dualBoundOnLevel2 = -1.0 * boundProbBroker.getBestNode()->getQuality();
               assert(dualBoundOnLevel2 >= -etol);
           }
-          std::cout << "\n \t Approach-2 val = " << dualBoundOnLevel2 << "\n";
+          */
       }
-    */
       //Value of boundOnLbf: 2 is a random multiplier
       if (fabs(primalBoundOnSubproblem) >= fabs(dualBoundOnSubproblem)) {
           boundOnLbf = 2*fabs(primalBoundOnSubproblem);
@@ -1702,7 +1705,7 @@ int main(int argc, char* argv[])
           clock_t current = clock();
           double timeTillNow = (double) (current - begin) / CLOCKS_PER_SEC;
           timeUp = ((timeTillNow >= 14400) ? true : false);
-          if (iterCounter >= 0 || masterInfeasible || (!subproblemInfeasible &&
+          if (masterInfeasible || (!subproblemInfeasible &&
                   (fabs(bilevelVFExactValue - bilevelVFApproxValue) <= etol))
                   || timeUp) {
               termFlag = true;
@@ -2019,7 +2022,6 @@ int main(int argc, char* argv[])
                       //Approach-2: Difference between max and min values
                       bigMForLbf = tempMax - tempMin;
                       assert(bigMForLbf >= -etol);
-//                      std::cout << "\t\t bigMForLbf \t\t" << bigMForLbf << std::endl;
                       if ((bigMForLbf - singleBigMForLbf) > etol) {
                           singleBigMForLbf = bigMForLbf;
                       }
@@ -2103,7 +2105,6 @@ int main(int argc, char* argv[])
                                   assert(tolTemp > etol); // not equal to zero
                                   //FIXME: 'floor' is used according to 'tol' usage
                                   //  later in the algo. Check again if 'ceil' is reqd.
-//                                  std::cout << tolTemp << "\t" << floor(tolTemp) << "\t" << ceil(tolTemp) << "\t" << round(tolTemp) << std::endl;
                                   tol[numBinColsForDomainRest] = floor(tolTemp);
                               }
                               delete solver;
@@ -2143,7 +2144,6 @@ int main(int argc, char* argv[])
                                   assert(tolTemp > etol); // not equal to zero
                                   //FIXME: 'floor' is used according to 'tol' usage
                                   //  later in the algo. Check again if 'ceil' is reqd.
-//                                  std::cout << tolTemp << "\t" << floor(tolTemp) << "\t" << ceil(tolTemp) << "\t" << round(tolTemp) << std::endl;
                                   tol[numBinColsForDomainRest] = floor(tolTemp);
                               }
                               delete solver;
@@ -2609,23 +2609,7 @@ int main(int argc, char* argv[])
 
               for (i = 0; i < leafNodeNum; i++) {
                   delete [] product1[i];
-                  /*
-                  if (leafUbCnt[i]) {
-                      delete [] leafUbVal[i];
-                      delete [] leafUbInd[i];
-                  }
-                  if (leafLbCnt[i]) {
-                      delete [] leafLbVal[i];
-                      delete [] leafLbInd[i];
-                  }
-                  */
               }
-              /*
-              delete [] leafUbVal;
-              delete [] leafLbVal;
-              delete [] leafUbInd;
-              delete [] leafLbInd;
-              */
               delete [] leafUbCnt;
               delete [] leafLbCnt;
               delete [] leafFeasibilityStatusInd;
