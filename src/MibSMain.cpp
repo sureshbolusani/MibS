@@ -1679,25 +1679,37 @@ int main(int argc, char* argv[])
                   bilevelVFExactValue = subproblemObjVal;
               }
 
+              /* Checking termination criterion */
+              //FIXME: are the criteria correct?
+              clock_t current = clock();
+              double timeTillNow = (double) (current - begin) / CLOCKS_PER_SEC;
+              timeUp = ((timeTillNow >= 14400) ? true : false);
+              if (!subproblemInfeasible &&
+                       (fabs(bilevelVFExactValue - bilevelVFApproxValue) <= etol)
+                    || timeUp) {
+                 termFlag = true;
+              }
 
-              /** Getting dual information to the subproblem **/
-              getDualData(solver, dualBoundOnSubproblem,
-                      &leafNodeNum, &leafFeasibilityStatusInd,
-                      leafDualByRow, leafPosDjByRow, leafNegDjByRow,
-                      &leafLbCnt, &leafLbInd, &leafLbVal,
-                      &leafUbCnt, &leafUbInd, &leafUbVal);
-              //Changing sign of leafDualByRow w.r.t. orig. subproblem's row sense
-              //    since SYMPHONY changes all rows internally to 'L' sense
-              //FIXME: Note that there are no 'E' rows in our MIBLPs as of now.
-              for (i = 0; i < subproblemRowNum; i++) {
-                  if (subproblemRowSense[i] == 'G') {
-                      for (j = 0; j < leafNodeNum; j++) {
+              if (!termFlag) {
+                 /** Getting dual information to the subproblem **/
+                 getDualData(solver, dualBoundOnSubproblem,
+                       &leafNodeNum, &leafFeasibilityStatusInd,
+                       leafDualByRow, leafPosDjByRow, leafNegDjByRow,
+                       &leafLbCnt, &leafLbInd, &leafLbVal,
+                       &leafUbCnt, &leafUbInd, &leafUbVal);
+                 //Changing sign of leafDualByRow w.r.t. orig. subproblem's row sense
+                 //    since SYMPHONY changes all rows internally to 'L' sense
+                 //FIXME: Note that there are no 'E' rows in our MIBLPs as of now.
+                 for (i = 0; i < subproblemRowNum; i++) {
+                    if (subproblemRowSense[i] == 'G') {
+                       for (j = 0; j < leafNodeNum; j++) {
                           double element = leafDualByRow->getCoefficient(j, i);
                           if (element) {
-                              leafDualByRow->modifyCoefficient(j, i, -element, true);
+                             leafDualByRow->modifyCoefficient(j, i, -element, true);
                           }
-                      }
-                  }
+                       }
+                    }
+                 }
               }
 
               delete solver;
@@ -1722,19 +1734,11 @@ int main(int argc, char* argv[])
                   memcpy(currentBestSolution, masterBestSolutionUpperCols, sizeof(double)*upperColNum);
                   memcpy(&currentBestSolution[upperColNum], subproblemBestSolution, sizeof(double)*lowerColNum);
               }
+          } else {
+             //Master problem infeasible
+             termFlag = true;
           }
 
-
-          /** Checking termination criterion **/
-          //FIXME: are the criteria correct?
-          clock_t current = clock();
-          double timeTillNow = (double) (current - begin) / CLOCKS_PER_SEC;
-          timeUp = ((timeTillNow >= 14400) ? true : false);
-          if (masterInfeasible || (!subproblemInfeasible &&
-                  (fabs(bilevelVFExactValue - bilevelVFApproxValue) <= etol))
-                  || timeUp) {
-              termFlag = true;
-          }
 
           /** Generating Benders' cuts and adding them to the master problem **/
           if (!termFlag) {
