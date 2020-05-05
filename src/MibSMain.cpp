@@ -13,6 +13,8 @@
 /* accompanying file for terms.                                              */
 /*===========================================================================*/
 
+//FIXME: A bug related to M_P parameter for the newest toy example#6 iter#3
+
 #define COIN_HAS_CPLEX 1
 #define COIN_HAS_SYMPHONY 1
 #define COIN_HAS_SOPLEX 1
@@ -746,7 +748,9 @@ int main(int argc, char* argv[])
       int *lowerRowInd = origMibsModel.getLowerRowInd();
       double *rowLb = origMibsModel.getOrigRowLb();
       double *rowUb = origMibsModel.getOrigRowUb();
+      int i;
 
+#if 1
       //Improving bounds by solving optimization problems
       OsiSolverInterface *boundImprSolver;
       std::string boundImprProbSolver = "CPLEX";
@@ -757,7 +761,6 @@ int main(int argc, char* argv[])
       boundImprObjSense[1] = -1.0;
       double *boundImprObjCoef = new double[upperColNum + lowerColNum];
       char *boundImprColType = new char[upperColNum + lowerColNum];
-      int i;
       for (i = 0; i < (upperColNum + lowerColNum); i++) {
           boundImprColType[i] = 'C';
       }
@@ -830,6 +833,7 @@ int main(int argc, char* argv[])
       delete [] boundImprColType;
       delete [] boundImprObjCoef;
       delete [] boundImprObjSense;
+#endif
 
 
       //FIXME: Make "z >= LBF" con. in master prob. robust to account for upperObjSense
@@ -1193,20 +1197,39 @@ int main(int argc, char* argv[])
       contRestMat.deleteCols(upperColNum, upperColInd);
       contRestMat.deleteCols(lowerIntColNum, lowerIntColInd);
       int extraColNum = 0;
-      for (i = 0; i < lowerRowNum; i++) {
-          //FIXME: remove dependency on subproblem data?
-          if (subproblemRowSense[i] == 'L') {
-              CoinPackedVector col;
-              col.insert(extraColNum, 1);
-              contRestMat.appendCol(col);
-              extraColNum++;
-          } else if (subproblemRowSense[i] == 'G') {
-              CoinPackedVector col;
-              col.insert(extraColNum, -1);
-              contRestMat.appendCol(col);
-              extraColNum++;
-          } else {
-              //should not happen due to a check earlier!
+      if (!upperRowsHaveLowerCols) {
+          for (i = 0; i < lowerRowNum; i++) {
+              //FIXME: remove dependency on subproblem data?
+              if (subproblemRowSense[i] == 'L') {
+                  CoinPackedVector col;
+                  col.insert(extraColNum, 1);
+                  contRestMat.appendCol(col);
+                  extraColNum++;
+              } else if (subproblemRowSense[i] == 'G') {
+                  CoinPackedVector col;
+                  col.insert(extraColNum, -1);
+                  contRestMat.appendCol(col);
+                  extraColNum++;
+              } else {
+                  //should not happen due to a check earlier!
+              }
+          }
+      } else {
+          for (i = upperRowNum; i < (upperRowNum + lowerRowNum); i++) {
+              //FIXME: remove dependency on subproblem data?
+              if (subproblemRowSense[i] == 'L') {
+                  CoinPackedVector col;
+                  col.insert(extraColNum, 1);
+                  contRestMat.appendCol(col);
+                  extraColNum++;
+              } else if (subproblemRowSense[i] == 'G') {
+                  CoinPackedVector col;
+                  col.insert(extraColNum, -1);
+                  contRestMat.appendCol(col);
+                  extraColNum++;
+              } else {
+                  //should not happen due to a check earlier!
+              }
           }
       }
       assert(extraColNum == lowerIneqRowNum);
@@ -1243,6 +1266,7 @@ int main(int argc, char* argv[])
               sizeof(int)*(upperColNum + lowerColNum));
       int linkingColNum = origMibsModel.getSizeFixedInd();
       */
+
       /** Initial setup for finding tolerance to impose strict inequality while
         restricting domain of 'x' in master problem **/
       //NOTE: 2*lowerRowNum is max size for tol
@@ -1348,6 +1372,7 @@ int main(int argc, char* argv[])
           boundProbModel->setSolver(boundProbLpSolver);
           boundProbModel->AlpsPar()->setEntry(AlpsParams::msgLevel, -1);
           boundProbModel->AlpsPar()->setEntry(AlpsParams::timeLimit, 100);
+          boundProbModel->MibSPar()->setEntry(MibSParams::cutStrategy, 0);
 
           boundProbModel->loadAuxiliaryData(lowerColNum,
                   lowerRowNum,
@@ -1361,8 +1386,7 @@ int main(int argc, char* argv[])
                   NULL,
                   0, NULL,
                   0, NULL,
-                  &origColLb[upperColNum],
-                  &origColUb[upperColNum]);
+                  NULL, NULL);
 
           boundProbModel->loadProblemData(boundProbMat,
                   origColLb, origColUb,
@@ -1537,6 +1561,7 @@ int main(int argc, char* argv[])
                   //Finding product of integer best solution and integer matrix
                   intRestMat.times(level2IntBestSolution, level2IntColRowActivity);
 
+                  //TODO: should CR be build based on L2 opt. sol. or SP opt. sol?
                   //Finding RowLb and RowUb for continuous restriction
                   memcpy(contRestRowLb, level2RowLb, sizeof(double)*lowerRowNum);
                   memcpy(contRestRowUb, level2RowUb, sizeof(double)*lowerRowNum);
@@ -1986,10 +2011,10 @@ int main(int argc, char* argv[])
 
                   //bigM for LBF of subproblem
                   singleBigMForLbf = 0;
+                  double tempMax = -infinity, tempMin = infinity;
                   for (i = 0; i < feasibleLeafNodeNum; i++) {
                       double bigMForLbf = 0, minVal1 = 0, maxVal1 = 0;
                       double minVal2 = 0, maxVal2 = 0;
-                      double tempMax, tempMin;
                       for (j = 0; j < upperColNum; j++) {
                           double coef = (product1[feasibleLeafNodeInd[i]][j] +
                                       fullDualOfExtraRow[feasibleLeafNodeInd[i]]*product2[j]);
@@ -2012,30 +2037,48 @@ int main(int argc, char* argv[])
                                lbPosDjProduct[feasibleLeafNodeInd[i]] +
                                ubNegDjProduct[feasibleLeafNodeInd[i]] +
                                fullDualOfExtraRow[feasibleLeafNodeInd[i]]*(product6 - product3 + level2IntObjVal + product8);
-                      tempMax = (bigMForLbf - minVal1 + maxVal2);
-                      tempMin = (bigMForLbf - maxVal1 + minVal2);
+                      if (tempMax < (bigMForLbf - minVal1 + maxVal2)) {
+                          tempMax = (bigMForLbf - minVal1 + maxVal2);
+                      }
+                      if (tempMin > (bigMForLbf - maxVal1 + minVal2)) {
+                          tempMin = (bigMForLbf - maxVal1 + minVal2);
+                      }
                       /*
+                      //Update Feb. 7, 2019: the following two approaches seem
+                      //    to be incorrect.
                       //Approach-1
                       //Note: 4 is a random multiplier
                       bigMForLbf = ((tempMax >= tempMin + etol) ? 4*tempMax : 4*tempMin);
-                      */
                       //Approach-2: Difference between max and min values
                       bigMForLbf = tempMax - tempMin;
                       assert(bigMForLbf >= -etol);
                       if ((bigMForLbf - singleBigMForLbf) > etol) {
                           singleBigMForLbf = bigMForLbf;
                       }
+                      */
                   }
+                  if ((tempMax > etol) && (tempMin < -etol)) {
+                      //Note: 2 is a random multiplier
+                      singleBigMForLbf = 2*(tempMax - tempMin);
+                  } else if (tempMax > etol) {
+                      singleBigMForLbf = 2*tempMax;
+                  } else {
+                      singleBigMForLbf = boundOnLbf;
+                  }
+
+                  /*
+                  //The following case is accounted just above.
                   if (singleBigMForLbf <= etol) {
                       //bigM = 0; make is some nonzero
                       singleBigMForLbf = boundOnLbf;
                   }
+                  */
               } else {
                   //bigM for LBF of subproblem
                   singleBigMForLbf = 0;
+                  double tempMax = -infinity, tempMin = infinity;
                   for (i = 0; i < feasibleLeafNodeNum; i++) {
                       double bigMForLbf = 0, minVal = 0, maxVal = 0;
-                      double tempMax, tempMin;
                       for (j = 0; j < upperColNum; j++) {
                           double coef = product1[feasibleLeafNodeInd[i]][j];
                           if (coef < -etol) {
@@ -2049,18 +2092,37 @@ int main(int argc, char* argv[])
                       bigMForLbf = product7[feasibleLeafNodeInd[i]] +
                                lbPosDjProduct[feasibleLeafNodeInd[i]] +
                                ubNegDjProduct[feasibleLeafNodeInd[i]];
-                      tempMax = fabs(bigMForLbf - minVal);
-                      tempMin = fabs(bigMForLbf - maxVal);
+                      if (tempMax < (bigMForLbf - minVal)) {
+                          tempMax = (bigMForLbf - minVal);
+                      }
+                      if (tempMin > (bigMForLbf - maxVal)) {
+                          tempMin = (bigMForLbf - maxVal);
+                      }
+                      /*
+                      //The following approach seems to be incorrect.
                       //Note: 4 is a random multiplier
                       bigMForLbf = ((tempMax >= tempMin + etol) ? 4*tempMax : 4*tempMin);
                       if ((bigMForLbf - singleBigMForLbf) > etol) {
                           singleBigMForLbf = bigMForLbf;
                       }
+                      */
                   }
+                  if ((tempMax > etol) && (tempMin < -etol)) {
+                      //Note: 2 is a random multiplier
+                      singleBigMForLbf = 2*(tempMax - tempMin);
+                  } else if (tempMax > etol) {
+                      singleBigMForLbf = 2*tempMax;
+                  } else {
+                      singleBigMForLbf = boundOnLbf;
+                  }
+
+                  /*
+                  //The following case is accounted just above.
                   if (singleBigMForLbf <= etol) {
                       //bigM = 0; make is some nonzero
                       singleBigMForLbf = boundOnLbf;
                   }
+                  */
               }
               //END finding products
 
