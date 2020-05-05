@@ -2757,10 +2757,10 @@ int main(int argc, char* argv[])
               delete [] leafLbVal;
               delete [] leafUbInd;
               delete [] leafLbInd;
-              */
               delete [] leafUbCnt;
               delete [] leafLbCnt;
               delete [] leafFeasibilityStatusInd;
+              */
               if (!level2Infeasible) {
                   for (i = 0; i < lowerRowNum; i++) {
                       delete [] contRestBasisInverseRow[i];
