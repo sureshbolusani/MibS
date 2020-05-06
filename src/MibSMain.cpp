@@ -13,7 +13,9 @@
 /* accompanying file for terms.                                              */
 /*===========================================================================*/
 
-//FIXME: A bug related to M_P parameter for the newest toy example#6 iter#3
+//FIXME: A bug related to M_P parameter for iter#3 of toy MIBLP in paper.
+//FIXED: It is not a bug. It is in fact working better than expected because
+//  of better bound on z due to better dualBoundOnLevel2.
 
 #define COIN_HAS_CPLEX 1
 #define COIN_HAS_SYMPHONY 1
@@ -1013,6 +1015,8 @@ int main(int argc, char* argv[])
       std::string subproblemSolver = "SYMPHONY";
       bool subproblemInfeasible = false;
       double *subproblemBestSolution = new double[subproblemColNum];
+      double *subproblemIntBestSolution = new double[lowerIntColNum];
+      CoinZeroN(subproblemIntBestSolution, lowerIntColNum);
       double subproblemObjVal;
       //FIXME: set # of threads appropriately later (as a part of argc/argv?)!
       int subproblemMaxThreads = 1;
@@ -1039,7 +1043,7 @@ int main(int argc, char* argv[])
       int masterRowNum = (upperRowsHaveLowerCols ? 0 : upperRowNum);
       int j;
       bool masterInfeasible = false;
-      double bilevelVFApproxValue = -infinity;
+      double rhoApproxValue = -infinity;
       //FIXME: set # of threads appropriately later (as a part of argc/argv?)!
       int masterMaxThreads = 1;
       //Parameter for identifying which MILP solver needs to be used
@@ -1135,7 +1139,7 @@ int main(int argc, char* argv[])
           optObjVal += masterObjCoef[i]*masterBestSolutionUpperCols[i];
       }
 
-      //Adding a column to master problem representing bilevel VF approx. value
+      //Adding a column to master problem representing rho approx. value
       masterColNum += 1;
       masterColLbVec.resize(masterColNum, -infinity);
       masterColUbVec.resize(masterColNum, +infinity);
@@ -1153,8 +1157,6 @@ int main(int argc, char* argv[])
       bool level2Infeasible = false;
       double *level2BestSolution = new double[lowerColNum];
       double level2ObjVal, level2IntObjVal;
-      double *level2IntBestSolution = new double[lowerIntColNum];
-      CoinZeroN(level2IntBestSolution, lowerIntColNum);
       double *level2RowLb = new double[lowerRowNum];
       double *level2RowUb = new double[lowerRowNum];
       CoinZeroN(level2RowLb, lowerRowNum);
@@ -1307,7 +1309,7 @@ int main(int argc, char* argv[])
       int tempCounter = 0;
       bool termFlag = false, timeUp = false;
       int iterCounter = 0;
-      double bilevelVFExactValue = infinity, boundOnLbf, dualBoundOnLevel2 = 0;
+      double rho = infinity, boundOnLbf, dualBoundOnLevel2 = 0;
       double bigMForUbf = 1e+7, singleBigMForLbf;
       double dualBoundOnSubproblem = 0, primalBoundOnSubproblem = 0;
       double *maxValForDomainRest = new double[lowerRowNum];
@@ -1545,111 +1547,20 @@ int main(int argc, char* argv[])
               delete solver;
 
               if (!level2Infeasible) {
-                  //If second level feasible, solve the continuous restriction
-                  //    for the known level2IntBestSolution
-
-                  for (i = 0; i < lowerIntColNum; i++) {
-                      level2IntBestSolution[i] = level2BestSolution[lowerIntColInd[i]];
-                  }
-
-                  //Finding product of integer best solution and corresponding obj. vector
-                  level2IntObjVal = 0;
-                  for (i = 0; i < lowerIntColNum; i++) {
-                      level2IntObjVal += level2IntBestSolution[i]*lowerObjCoef[lowerIntColInd[i]];
-                  }
-
-                  //Finding product of integer best solution and integer matrix
-                  intRestMat.times(level2IntBestSolution, level2IntColRowActivity);
-
-                  //TODO: should CR be build based on L2 opt. sol. or SP opt. sol?
-                  //Finding RowLb and RowUb for continuous restriction
-                  memcpy(contRestRowLb, level2RowLb, sizeof(double)*lowerRowNum);
-                  memcpy(contRestRowUb, level2RowUb, sizeof(double)*lowerRowNum);
-                  for (i = 0; i < lowerRowNum; i++) {
-                      if (contRestRowLb[i] > -infinity) {
-                          contRestRowLb[i] -= level2IntColRowActivity[i];
-                          //Following line to avoid soplex related errors
-                          contRestRowLb[i] = contRestRowLb[i];
-                          //Following line because all are rows are '=' type now!
-                          contRestRowUb[i] = contRestRowLb[i];
-                      } else if (contRestRowUb[i] < infinity) {
-                          contRestRowUb[i] -= level2IntColRowActivity[i];
-                          //Following line to avoid soplex related errors
-                          contRestRowUb[i] = contRestRowUb[i];
-                          //Following line because all are rows are '=' type now!
-                          contRestRowLb[i] = contRestRowUb[i];
-                      }
-                  }
-
-                  //Actual solving
-                  solver = getSolver(contRestProblemSolver, contRestMaxThreads, false);
-                  contRestInfeasible = solve(solver,
-                          contRestColNum, contRestObjCoef, lowerObjSense,
-                          contRestColLb, contRestColUb, contRestColType,
-                          &contRestMat, contRestRowLb, contRestRowUb,
-                          &contRestObjVal, contRestBestSolution);
-                  memcpy(contRestDualSolution, solver->getRowPrice(), sizeof(double)*lowerRowNum);
-                  memcpy(contRestDjSolution, solver->getReducedCost(), sizeof(double)*contRestColNum);
-                  soplex::SoPlex *soplex =
-                      dynamic_cast<OsiSpxSolverInterface*>(solver)->getLpPtr();
-                  for (i = 0; i < lowerRowNum; i++) {
-                      soplex::SSVectorRational basisInverseCol(lowerRowNum);
-                      soplex->getBasisInverseColRational(i, basisInverseCol);
-                      for (j = 0; j < lowerRowNum; j++) {
-                          contRestBasisInverseRows.setValue(i + j*lowerRowNum, basisInverseCol[j]);
-                      }
-                  }
-                  for (i = 0; i < lowerRowNum; i++) {
-                      soplex::SSVectorRational basisInverseRow(lowerRowNum);
-                      for (j = 0; j < lowerRowNum; j++) {
-                          basisInverseRow.add(j, contRestBasisInverseRows[i*lowerRowNum + j]);
-                      }
-                      contRestBasisInverseRowLcm[i] = dlcmRational(basisInverseRow.values(), lowerRowNum);
-                  }
-                  for (i = 0; i < lowerRowNum; i++) {
-                      contRestBasisInverseRow[i] = new double[lowerRowNum];
-                      solver->getBInvRow(i, contRestBasisInverseRow[i]);
-                  }
-                  solver->getBasics(contRestBasisIndices);
-                  //Changing contRestBasisIndices to reflect slack/surplus variables based on output from SoPlex
-                  //We get the indices as "numcols -1 + rownum" in case of a basic row
-                  //    ==> the slack variables corresponding to that row is a basic col
-                  //        ==> we can mark our already introduced slack col as basic
-                  for (i = 0; i < lowerRowNum; i++) {
-                      if (contRestBasisIndices[i] >= contRestColNum) {
-                          contRestBasisIndices[i] = contRestBasisIndices[i] - contRestColNum + lowerContColNum;
-                      }
-                  }
-                  //Building non-basic part of opt. sol. by zeroing basic part
-                  memcpy(contRestBestSolutionNonBasics, contRestBestSolution, sizeof(double)*contRestColNum);
-                  for (i = 0; i < lowerRowNum; i++) {
-                      contRestBestSolutionNonBasics[contRestBasisIndices[i]] = 0;
-                  }
-                  delete solver;
-
-                  if (contRestInfeasible) {
-                      //Should not happen because level2Infeasible is false!
-                      std::cout << 
-                          "Error: Restriction is infeasible whereas it should not be!."
-                          << std::endl;
-                      return 0;
-                  }
-
-                  /* Updating subproblem data with new info. from continuous restriction */
+                  //Updating subproblem data with new info.
                   if (addRowInd) {
                       subproblemMat.appendRow(subproblemColNum, subproblemLowerColInd, lowerObjCoef);
                       addRowInd = false;
                   }
                   if (lowerObjSense == 1) {
                       subproblemRowLb[subproblemRowNum - 1] = -infinity;
-                      subproblemRowUb[subproblemRowNum - 1] = contRestObjVal + level2IntObjVal;
+                      subproblemRowUb[subproblemRowNum - 1] = level2ObjVal;
                   } else {
-                      subproblemRowLb[subproblemRowNum - 1] = contRestObjVal + level2IntObjVal;
+                      subproblemRowLb[subproblemRowNum - 1] = level2ObjVal;
                       subproblemRowUb[subproblemRowNum - 1] = infinity;
                   }
-                  subproblemRhs[subproblemRowNum - 1] = contRestObjVal + level2IntObjVal;
+                  subproblemRhs[subproblemRowNum - 1] = level2ObjVal;
               } else {
-                  contRestObjVal = infinity;
                   if (!addRowInd) {
                       //Delete the objective bound-type row from subproblemMat
                       int rowIndToDelete = subproblemRowNum - 1;
@@ -1667,7 +1578,7 @@ int main(int argc, char* argv[])
                       &subproblemMat, subproblemRowLb, subproblemRowUb,
                       &subproblemObjVal, subproblemBestSolution);
 
-              // Updating value function exact value
+              //Updating reaction function value
               if (!subproblemInfeasible) {
                   subproblemObjVal = 0;
                   for (i = 0; i < subproblemColNum; i++) {
@@ -1676,27 +1587,27 @@ int main(int argc, char* argv[])
                       }
                       subproblemObjVal += subproblemBestSolution[i] * subproblemObjCoef[i];
                   }
-                  bilevelVFExactValue = subproblemObjVal;
+                  rho = subproblemObjVal;
               }
 
-              /* Checking termination criterion */
-              //FIXME: are the criteria correct?
+              /* Checking termination criterion and gathering dual information if needed */
+              //TODO: are the criteria correct?
+              //TODO: Remove {level2 = feas & subprob = infeas} later!
               clock_t current = clock();
               double timeTillNow = (double) (current - begin) / CLOCKS_PER_SEC;
               timeUp = ((timeTillNow >= 14400) ? true : false);
               if (!subproblemInfeasible &&
-                       (fabs(bilevelVFExactValue - bilevelVFApproxValue) <= etol)
-                    || timeUp) {
+                       (fabs(rho - rhoApproxValue) <= etol)
+                    || timeUp || (!level2Infeasible && subproblemInfeasible)) {
                  termFlag = true;
-              }
-
-              if (!termFlag) {
-                 /** Getting dual information to the subproblem **/
+              } else {
+                 //Getting dual information to the subproblem
                  getDualData(solver, dualBoundOnSubproblem,
                        &leafNodeNum, &leafFeasibilityStatusInd,
                        leafDualByRow, leafPosDjByRow, leafNegDjByRow,
                        &leafLbCnt, &leafLbInd, &leafLbVal,
                        &leafUbCnt, &leafUbInd, &leafUbVal);
+
                  //Changing sign of leafDualByRow w.r.t. orig. subproblem's row sense
                  //    since SYMPHONY changes all rows internally to 'L' sense
                  //FIXME: Note that there are no 'E' rows in our MIBLPs as of now.
@@ -1714,25 +1625,25 @@ int main(int argc, char* argv[])
 
               delete solver;
 
-              /* Check bilevel feasibility */
               if (!subproblemInfeasible) {
-                  double level2ObjValForSubproblemSol = 0;
-                  for (i = 0; i < lowerColNum; i++) {
-                      level2ObjValForSubproblemSol += subproblemBestSolution[i]*lowerObjCoef[i];
-                  }
-                  assert(fabs(level2ObjValForSubproblemSol - level2ObjVal) <= etol);
-                  //Updating original MIBLP objective value with its second level part
-                  for (i = 0; i < lowerColNum; i++) {
-                      optObjVal += subproblemObjCoef[i]*subproblemBestSolution[i];
-                  }
-              }
+                 /* Check bilevel feasibility */
+                 double level2ObjValForSubproblemSol = 0;
+                 for (i = 0; i < lowerColNum; i++) {
+                    level2ObjValForSubproblemSol += subproblemBestSolution[i]*lowerObjCoef[i];
+                 }
+                 assert(fabs(level2ObjValForSubproblemSol - level2ObjVal) <= etol);
+                 //Updating original MIBLP objective value with its second level part
+                 for (i = 0; i < lowerColNum; i++) {
+                    optObjVal += subproblemObjCoef[i]*subproblemBestSolution[i];
+                 }
 
-              /* Updating best solution found so far */
-              if (currentBestObjVal >= optObjVal + etol) {
-                  currentBestIteration = iterCounter;
-                  currentBestObjVal = optObjVal;
-                  memcpy(currentBestSolution, masterBestSolutionUpperCols, sizeof(double)*upperColNum);
-                  memcpy(&currentBestSolution[upperColNum], subproblemBestSolution, sizeof(double)*lowerColNum);
+                 /* Updating best solution found so far */
+                 if (currentBestObjVal >= optObjVal + etol) {
+                    currentBestIteration = iterCounter;
+                    currentBestObjVal = optObjVal;
+                    memcpy(currentBestSolution, masterBestSolutionUpperCols, sizeof(double)*upperColNum);
+                    memcpy(&currentBestSolution[upperColNum], subproblemBestSolution, sizeof(double)*lowerColNum);
+                 }
               }
           } else {
              //Master problem infeasible
@@ -1797,7 +1708,7 @@ int main(int argc, char* argv[])
               //    and (column UBs and negative reduced costs (leafNegDjByRow))
               double *lbPosDjProduct = new double[leafNodeNum];
               double *ubNegDjProduct = new double[leafNodeNum];
-              //FIXME: Is following initialization necessary?
+              //TODO: Is following initialization necessary?
               CoinZeroN(lbPosDjProduct, leafNodeNum);
               CoinZeroN(ubNegDjProduct, leafNodeNum);
               CoinShallowPackedVector posDj;
@@ -1901,6 +1812,99 @@ int main(int argc, char* argv[])
               //Product of cont. rest. basis inverse and product9
               double *product10 = new double[lowerRowNum];
               if (!level2Infeasible) {
+                  /* Continuous restriction building and solving */
+                  //If level2 problem feasible, solve the continuous restriction
+                  //    for the known subproblemIntBestSolution
+                  //FIXME: Earlier under termCheck conditions, I assumed that
+                  //    {level2 = feas & subprob = infeas} cannot happen. But
+                  //    when that happens in reality, make some changes here!
+                  for (i = 0; i < lowerIntColNum; i++) {
+                      subproblemIntBestSolution[i] = subproblemBestSolution[lowerIntColInd[i]];
+                  }
+
+                  //Finding product of integer best solution and corresponding obj. vector
+                  level2IntObjVal = 0;
+                  for (i = 0; i < lowerIntColNum; i++) {
+                      level2IntObjVal += subproblemIntBestSolution[i]*lowerObjCoef[lowerIntColInd[i]];
+                  }
+
+                  //Finding product of integer best solution and integer matrix
+                  intRestMat.times(subproblemIntBestSolution, level2IntColRowActivity);
+
+                  //Finding RowLb and RowUb for continuous restriction
+                  memcpy(contRestRowLb, level2RowLb, sizeof(double)*lowerRowNum);
+                  memcpy(contRestRowUb, level2RowUb, sizeof(double)*lowerRowNum);
+                  for (i = 0; i < lowerRowNum; i++) {
+                      if (contRestRowLb[i] > -infinity) {
+                          contRestRowLb[i] -= level2IntColRowActivity[i];
+                          //Following line to avoid soplex related errors
+                          contRestRowLb[i] = contRestRowLb[i];
+                          //Following line because all are rows are '=' type now!
+                          contRestRowUb[i] = contRestRowLb[i];
+                      } else if (contRestRowUb[i] < infinity) {
+                          contRestRowUb[i] -= level2IntColRowActivity[i];
+                          //Following line to avoid soplex related errors
+                          contRestRowUb[i] = contRestRowUb[i];
+                          //Following line because all are rows are '=' type now!
+                          contRestRowLb[i] = contRestRowUb[i];
+                      }
+                  }
+
+                  //Actual solving
+                  solver = getSolver(contRestProblemSolver, contRestMaxThreads, false);
+                  contRestInfeasible = solve(solver,
+                          contRestColNum, contRestObjCoef, lowerObjSense,
+                          contRestColLb, contRestColUb, contRestColType,
+                          &contRestMat, contRestRowLb, contRestRowUb,
+                          &contRestObjVal, contRestBestSolution);
+                  memcpy(contRestDualSolution, solver->getRowPrice(), sizeof(double)*lowerRowNum);
+                  memcpy(contRestDjSolution, solver->getReducedCost(), sizeof(double)*contRestColNum);
+                  soplex::SoPlex *soplex =
+                      dynamic_cast<OsiSpxSolverInterface*>(solver)->getLpPtr();
+                  for (i = 0; i < lowerRowNum; i++) {
+                      soplex::SSVectorRational basisInverseCol(lowerRowNum);
+                      soplex->getBasisInverseColRational(i, basisInverseCol);
+                      for (j = 0; j < lowerRowNum; j++) {
+                          contRestBasisInverseRows.setValue(i + j*lowerRowNum, basisInverseCol[j]);
+                      }
+                  }
+                  for (i = 0; i < lowerRowNum; i++) {
+                      soplex::SSVectorRational basisInverseRow(lowerRowNum);
+                      for (j = 0; j < lowerRowNum; j++) {
+                          basisInverseRow.add(j, contRestBasisInverseRows[i*lowerRowNum + j]);
+                      }
+                      contRestBasisInverseRowLcm[i] = dlcmRational(basisInverseRow.values(), lowerRowNum);
+                  }
+                  for (i = 0; i < lowerRowNum; i++) {
+                      contRestBasisInverseRow[i] = new double[lowerRowNum];
+                      solver->getBInvRow(i, contRestBasisInverseRow[i]);
+                  }
+                  solver->getBasics(contRestBasisIndices);
+                  //Changing contRestBasisIndices to reflect slack/surplus variables based on output from SoPlex
+                  //We get the indices as "numcols -1 + rownum" in case of a basic row
+                  //    ==> the slack variables corresponding to that row is a basic col
+                  //        ==> we can mark our already introduced slack col as basic
+                  for (i = 0; i < lowerRowNum; i++) {
+                      if (contRestBasisIndices[i] >= contRestColNum) {
+                          contRestBasisIndices[i] = contRestBasisIndices[i] - contRestColNum + lowerContColNum;
+                      }
+                  }
+                  //Building non-basic part of opt. sol. by zeroing basic part
+                  memcpy(contRestBestSolutionNonBasics, contRestBestSolution, sizeof(double)*contRestColNum);
+                  for (i = 0; i < lowerRowNum; i++) {
+                      contRestBestSolutionNonBasics[contRestBasisIndices[i]] = 0;
+                  }
+                  delete solver;
+
+                  if (contRestInfeasible) {
+                      //Should not happen because subproblemInfeasible is false!
+                      std::cout <<
+                          "Error: Restriction is infeasible whereas it should not be!."
+                          << std::endl;
+                      return 0;
+                  }
+
+                  /* Back to product calculations */
                   //Product of constraint matrix (A^2) and dual of continuous restriction
                   CoinZeroN(product2, upperColNum);
                   lowerMatOfUpperCols.transposeTimes(contRestDualSolution, product2);
@@ -1934,7 +1938,6 @@ int main(int argc, char* argv[])
                           }
                       }
                   }
-
 
                   //Product of cont. rest. basis inverse and lower level's row
                   //    activity of integer restriction
@@ -2078,6 +2081,11 @@ int main(int argc, char* argv[])
                   }
                   */
               } else {
+                  //FIXME: Earlier under termCheck, I assumed that
+                  //    {subprob = infeas and level2 = feas} cannot happen.
+                  //    So this else condition is correct. But when I remove
+                  //    that termCheck condition, make some changes here aptly!
+
                   //bigM for LBF of subproblem
                   singleBigMForLbf = 0;
                   double tempMax = -infinity, tempMin = infinity;
@@ -2604,8 +2612,8 @@ int main(int argc, char* argv[])
               std::cout << "masterInfeas = " << masterInfeasible <<
                   ", level2Infeas = " << level2Infeasible <<
                   ", subproblemInfeas = " << subproblemInfeasible << std::endl;
-              std::cout << "VF Exact = " << bilevelVFExactValue << ", VF Approx = " <<
-                  bilevelVFApproxValue  << ", Master ObjVal = " << masterObjVal << std::endl;
+              std::cout << "RF Exact = " << rho << ", RF Approx = " <<
+                  rhoApproxValue  << ", Master ObjVal = " << masterObjVal << std::endl;
               std::cout << std::endl;
 
               //Storing current iteration's data
@@ -2642,7 +2650,7 @@ int main(int argc, char* argv[])
               
 
               //This checks the infinite loop condition which should never happen
-              if (fabs(masterBestSolution[upperColNum] - bilevelVFApproxValue) <= etol) {
+              if (fabs(masterBestSolution[upperColNum] - rhoApproxValue) <= etol) {
                   for (i = 0; i < upperColNum; i++) {
                       if (fabs(masterBestSolutionUpperCols[i] - masterBestSolution[i]) > etol) {
                           break;
@@ -2665,7 +2673,7 @@ int main(int argc, char* argv[])
               /** Getting solution to master problem **/
               if (!masterInfeasible) {
                   //FIXME: unbounded case? any other invalid case?
-                  bilevelVFApproxValue = masterBestSolution[upperColNum];
+                  rhoApproxValue = masterBestSolution[upperColNum];
                   //Evaluating first level part of the obj. function
                   optObjVal = 0;
                   for (i = 0; i < upperColNum; i++) {
@@ -2705,8 +2713,8 @@ int main(int argc, char* argv[])
               std::cout << "masterInfeas = " << masterInfeasible <<
                   ", level2Infeas = " << level2Infeasible <<
                   ", subproblemInfeas = " << subproblemInfeasible << std::endl;
-              std::cout << "VF Exact = " << bilevelVFExactValue << ", VF Approx = " <<
-                  bilevelVFApproxValue  << ", Master ObjVal = " << masterObjVal << std::endl;
+              std::cout << "RF Exact = " << rho << ", RF Approx = " <<
+                  rhoApproxValue  << ", Master ObjVal = " << masterObjVal << std::endl;
               if (!masterInfeasible && !timeUp) {
                   std::cout << "Optimal Objective Value = " << optObjVal << std::endl;
                   std::cout << "Optimal Solution:" << std::endl;
@@ -2760,12 +2768,12 @@ int main(int argc, char* argv[])
               delete [] leafUbCnt;
               delete [] leafLbCnt;
               delete [] leafFeasibilityStatusInd;
-              */
               if (!level2Infeasible) {
                   for (i = 0; i < lowerRowNum; i++) {
                       delete [] contRestBasisInverseRow[i];
                   }
               }
+              */
           }
           iterCounter++;
       }
@@ -2793,13 +2801,13 @@ int main(int argc, char* argv[])
       delete [] contRestObjCoef;
       delete [] level2RowUb;
       delete [] level2RowLb;
-      delete [] level2IntBestSolution;
       delete [] level2BestSolution;
       delete [] masterBestSolutionUpperColsPrevIter;
       delete [] masterBestSolutionUpperCols;
       delete leafNegDjByRow;
       delete leafPosDjByRow;
       delete leafDualByRow;
+      delete [] subproblemIntBestSolution;
       delete [] subproblemBestSolution;
       delete [] tempSubproblemColUb;
       delete [] tempSubproblemColLb;
