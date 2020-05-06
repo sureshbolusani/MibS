@@ -1015,8 +1015,6 @@ int main(int argc, char* argv[])
       std::string subproblemSolver = "SYMPHONY";
       bool subproblemInfeasible = false;
       double *subproblemBestSolution = new double[subproblemColNum];
-      double *subproblemIntBestSolution = new double[lowerIntColNum];
-      CoinZeroN(subproblemIntBestSolution, lowerIntColNum);
       double subproblemObjVal;
       //FIXME: set # of threads appropriately later (as a part of argc/argv?)!
       int subproblemMaxThreads = 1;
@@ -1083,7 +1081,7 @@ int main(int argc, char* argv[])
       CoinPackedMatrix masterMat(rowCoefMatrixByCol);
       masterMat.deleteRows(lowerRowNum, lowerRowInd);
       masterMat.deleteCols(lowerColNum, lowerColInd);
-      if (upperRowsHaveLowerCols) {
+      if (upperRowsHaveLowerCols || !upperRowNum) {
           masterMat.deleteRows(upperRowNum, upperRowInd);
           //Matrix is empty now! Add a dummy row to avoid error from CPLEX or SYMPHONY
           bool finiteLb = false;
@@ -1175,6 +1173,8 @@ int main(int argc, char* argv[])
       //FIXME: A restriction can be used only if first level is minimization.
       //    Make the code robust to account for first level maximization too
       //        by solving a relaxation in place of restriction.
+      double *intBestSolution = new double[lowerIntColNum];
+      CoinZeroN(intBestSolution, lowerIntColNum);
       //NOTE: contRestRowNum = lowerRowNum
       int contRestColNum = lowerContColNum + lowerIneqRowNum;
       double *contRestObjCoef = new double[contRestColNum];
@@ -1461,6 +1461,13 @@ int main(int argc, char* argv[])
 //      optSol[9] = masterBestSolutionUpperColsPrevIter[9];
       //      optSol[10] = -5620.75;
       */
+      std::cout << std::endl;
+      std::cout << "Starting algorithmic iterations..." << std::endl;
+      std::cout << std::endl;
+      std::cout << "    Iteration";
+      std::cout << "  Upper Bound";
+      std::cout << "  Lower Bound";
+      std::cout << std::endl;
 
 
 
@@ -1592,13 +1599,12 @@ int main(int argc, char* argv[])
 
               /* Checking termination criterion and gathering dual information if needed */
               //TODO: are the criteria correct?
-              //TODO: Remove {level2 = feas & subprob = infeas} later!
               clock_t current = clock();
               double timeTillNow = (double) (current - begin) / CLOCKS_PER_SEC;
               timeUp = ((timeTillNow >= 14400) ? true : false);
               if (!subproblemInfeasible &&
                        (fabs(rho - rhoApproxValue) <= etol)
-                    || timeUp || (!level2Infeasible && subproblemInfeasible)) {
+                    || timeUp) {
                  termFlag = true;
               } else {
                  //Getting dual information to the subproblem
@@ -1814,22 +1820,22 @@ int main(int argc, char* argv[])
               if (!level2Infeasible) {
                   /* Continuous restriction building and solving */
                   //If level2 problem feasible, solve the continuous restriction
-                  //    for the known subproblemIntBestSolution
-                  //FIXME: Earlier under termCheck conditions, I assumed that
-                  //    {level2 = feas & subprob = infeas} cannot happen. But
-                  //    when that happens in reality, make some changes here!
+                  //    for the known integer component of subproblemBestSolution
+                  //    (or level2BestSolution if subproblem is infeasible).
                   for (i = 0; i < lowerIntColNum; i++) {
-                      subproblemIntBestSolution[i] = subproblemBestSolution[lowerIntColInd[i]];
+                      intBestSolution[i] = (!subproblemInfeasible ?
+                            subproblemBestSolution[lowerIntColInd[i]] :
+                            level2BestSolution[lowerIntColInd[i]]);
                   }
 
                   //Finding product of integer best solution and corresponding obj. vector
                   level2IntObjVal = 0;
                   for (i = 0; i < lowerIntColNum; i++) {
-                      level2IntObjVal += subproblemIntBestSolution[i]*lowerObjCoef[lowerIntColInd[i]];
+                      level2IntObjVal += intBestSolution[i]*lowerObjCoef[lowerIntColInd[i]];
                   }
 
                   //Finding product of integer best solution and integer matrix
-                  intRestMat.times(subproblemIntBestSolution, level2IntColRowActivity);
+                  intRestMat.times(intBestSolution, level2IntColRowActivity);
 
                   //Finding RowLb and RowUb for continuous restriction
                   memcpy(contRestRowLb, level2RowLb, sizeof(double)*lowerRowNum);
@@ -2081,11 +2087,6 @@ int main(int argc, char* argv[])
                   }
                   */
               } else {
-                  //FIXME: Earlier under termCheck, I assumed that
-                  //    {subprob = infeas and level2 = feas} cannot happen.
-                  //    So this else condition is correct. But when I remove
-                  //    that termCheck condition, make some changes here aptly!
-
                   //bigM for LBF of subproblem
                   singleBigMForLbf = 0;
                   double tempMax = -infinity, tempMin = infinity;
@@ -2607,6 +2608,7 @@ int main(int argc, char* argv[])
                   masterRowNum += feasibleLeafNodeNum + 1;
               }
 
+              /*
               std::cout << std::endl;
               std::cout << "Iter-" << iterCounter << std::endl;
               std::cout << "masterInfeas = " << masterInfeasible <<
@@ -2615,6 +2617,14 @@ int main(int argc, char* argv[])
               std::cout << "RF Exact = " << rho << ", RF Approx = " <<
                   rhoApproxValue  << ", Master ObjVal = " << masterObjVal << std::endl;
               std::cout << std::endl;
+              */
+              double UB = (iterCounter ? ((masterObjVal - rhoApproxValue) + rho) : infinity);
+              double LB = (iterCounter ? masterObjVal : -infinity);
+              std::cout << std::right
+                        << std::setw(13) << iterCounter
+                        << std::setw(13) << UB
+                        << std::setw(13) << LB
+                        << std::endl;
 
               //Storing current iteration's data
               masterObjValPrevIter = masterObjVal;
@@ -2708,6 +2718,7 @@ int main(int argc, char* argv[])
               delete [] product4;
               delete [] masterBestSolution;
           } else {
+              /*
               std::cout << std::endl;
               std::cout << "Iter-" << iterCounter << std::endl;
               std::cout << "masterInfeas = " << masterInfeasible <<
@@ -2715,6 +2726,16 @@ int main(int argc, char* argv[])
                   ", subproblemInfeas = " << subproblemInfeasible << std::endl;
               std::cout << "RF Exact = " << rho << ", RF Approx = " <<
                   rhoApproxValue  << ", Master ObjVal = " << masterObjVal << std::endl;
+              */
+              double UB = (iterCounter ? ((masterObjVal - rhoApproxValue) + rho) : infinity);
+              double LB = (iterCounter ? masterObjVal : -infinity);
+              std::cout << std::right
+                        << std::setw(13) << iterCounter
+                        << std::setw(13) << UB
+                        << std::setw(13) << LB
+                        << std::endl;
+              std::cout << std::endl;
+              std::cout << "Termination criterion achieved." << std::endl;
               if (!masterInfeasible && !timeUp) {
                   std::cout << "Optimal Objective Value = " << optObjVal << std::endl;
                   std::cout << "Optimal Solution:" << std::endl;
@@ -2799,6 +2820,7 @@ int main(int argc, char* argv[])
       delete [] contRestColUb;
       delete [] contRestColLb;
       delete [] contRestObjCoef;
+      delete [] intBestSolution;
       delete [] level2RowUb;
       delete [] level2RowLb;
       delete [] level2BestSolution;
@@ -2807,7 +2829,6 @@ int main(int argc, char* argv[])
       delete leafNegDjByRow;
       delete leafPosDjByRow;
       delete leafDualByRow;
-      delete [] subproblemIntBestSolution;
       delete [] subproblemBestSolution;
       delete [] tempSubproblemColUb;
       delete [] tempSubproblemColLb;
