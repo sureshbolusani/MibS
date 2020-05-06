@@ -698,6 +698,9 @@ int main(int argc, char* argv[])
     //FIXME: objVals are uninitialized before passing to "solve" function.
 
     clock_t begin = clock();
+    std::cout << std::endl;
+    std::cout << "==============================================" << std::endl;
+    std::cout << "==============================================" << std::endl;
 
     try{
        
@@ -769,7 +772,7 @@ int main(int argc, char* argv[])
       double boundImprObjVal = 0;
       double *boundImprBestSolution = new double[upperColNum + lowerColNum];
       int counter;
-      //Performing bound improvement preprocessing two times
+      //Performing bound improvement preprocessing 2 times
       for (counter = 0; counter < 2; counter++) {
           CoinZeroN(boundImprObjCoef, (upperColNum + lowerColNum));
           for (i = 0; i < (upperColNum + lowerColNum); i++) {
@@ -1337,7 +1340,38 @@ int main(int argc, char* argv[])
           }
           */
       }
-      //Approach-2: Find dualBoundOnLevel2 by solving a bilevel bounding problem
+      //Approach-2: Find dualBoundOnLevel2 by solving an MILP (level2 but max. obj.)
+      {
+          //Misc. parameters for bounding problem
+          std::string boundProbSolverName = "CPLEX";
+          int boundProbMaxThreads = 1;
+          CoinPackedMatrix boundProbMat(rowCoefMatrixByCol);
+          boundProbMat.deleteRows(upperRowNum, upperRowInd);
+          double *boundProbObjCoef = new double[upperColNum + lowerColNum];
+          CoinZeroN(boundProbObjCoef, upperColNum);
+          memcpy(&boundProbObjCoef[upperColNum], lowerObjCoef, sizeof(double)*lowerColNum);
+          double *boundProbRowLb = new double[lowerRowNum];
+          double *boundProbRowUb = new double[lowerRowNum];
+          memcpy(boundProbRowLb, &rowLb[upperRowNum], sizeof(double)*lowerRowNum);
+          memcpy(boundProbRowUb, &rowUb[upperRowNum], sizeof(double)*lowerRowNum);
+          double *boundProbBestSolution = new double[upperColNum + lowerColNum];
+          bool boundProbInfeasible = false;
+
+          OsiSolverInterface *boundProbSolver = getSolver(boundProbSolverName, boundProbMaxThreads, false);
+          boundProbInfeasible = solve(boundProbSolver,
+                (upperColNum + lowerColNum), boundProbObjCoef, -1.0,
+                origColLb, origColUb, colType,
+                &boundProbMat, boundProbRowLb, boundProbRowUb,
+                &dualBoundOnLevel2, boundProbBestSolution);
+
+          delete boundProbSolver;
+          delete boundProbBestSolution;
+          delete boundProbRowUb;
+          delete boundProbRowLb;
+          delete boundProbObjCoef;
+      }
+      /*
+      //Approach-3: Find dualBoundOnLevel2 by solving a bilevel bounding problem
       {
           //Misc. parameters for bounding problem
           std::string boundProbLpSolverName = "CPLEX";
@@ -1405,21 +1439,21 @@ int main(int argc, char* argv[])
 
           boundProbBroker.search(boundProbModel);
           assert(boundProbBroker.getSolStatus() != AlpsExitStatusInfeasible);
-          /*
-          double *boundProbSolution;
-          if (boundProbModel->getNumSolutions() > 0){
-              boundProbSolution = boundProbModel->incumbent();
-          }
-          */
+
+          //double *boundProbSolution;
+          //if (boundProbModel->getNumSolutions() > 0){
+          //    boundProbSolution = boundProbModel->incumbent();
+          //}
+
 
           dualBoundOnLevel2 = -1.0 * boundProbModel->getKnowledgeBroker()->getBestQuality();
-          /*
-          if (boundProbBroker.getBestNode()) {
-              dualBoundOnLevel2 = -1.0 * boundProbBroker.getBestNode()->getQuality();
-              assert(dualBoundOnLevel2 >= -etol);
-          }
-          */
+
+          //if (boundProbBroker.getBestNode()) {
+          //    dualBoundOnLevel2 = -1.0 * boundProbBroker.getBestNode()->getQuality();
+          //    assert(dualBoundOnLevel2 >= -etol);
+          //}
       }
+      */
       //Value of boundOnLbf: 2 is a random multiplier
       if (fabs(primalBoundOnSubproblem) >= fabs(dualBoundOnSubproblem)) {
           boundOnLbf = 2*fabs(primalBoundOnSubproblem);
@@ -2736,6 +2770,7 @@ int main(int argc, char* argv[])
                         << std::endl;
               std::cout << std::endl;
               std::cout << "Termination criterion achieved." << std::endl;
+              std::cout << "====================================" << std::endl;
               if (!masterInfeasible && !timeUp) {
                   std::cout << "Optimal Objective Value = " << optObjVal << std::endl;
                   std::cout << "Optimal Solution:" << std::endl;
@@ -2864,7 +2899,8 @@ int main(int argc, char* argv[])
     clock_t end = clock();
     double elapsed_time = (double)(end - begin) / CLOCKS_PER_SEC;
 
-    std::cout << "Total elapsed time = " << elapsed_time << std::endl;
+    std::cout << "Total wall-clock time = " << elapsed_time << std::endl;
+    std::cout << "====================================" << std::endl;
 
     return 0;
 }
