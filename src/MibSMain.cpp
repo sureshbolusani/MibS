@@ -698,6 +698,7 @@ int main(int argc, char* argv[])
     //FIXME: objVals are uninitialized before passing to "solve" function.
 
     clock_t begin = clock();
+    double totalMasterTime = 0.0;
     std::cout << std::endl;
     std::cout << "==============================================" << std::endl;
     std::cout << "==============================================" << std::endl;
@@ -1118,11 +1119,14 @@ int main(int argc, char* argv[])
       /** Solving initial master problem without any second level information **/
       masterBestSolution = new double[masterColNum];
       OsiSolverInterface *solver = getSolver(masterProblemSolver, masterMaxThreads, false);
+      clock_t masterBegin = clock();
       masterInfeasible = solve(solver,
               masterColNum, masterObjCoef, upperObjSense,
               masterColLb, masterColUb, masterColType,
               &masterMat, masterRowLb, masterRowUb,
               &masterObjVal, masterBestSolution);
+      clock_t masterEnd = clock();
+      totalMasterTime += (double) (masterEnd - masterBegin)/CLOCKS_PER_SEC;
       delete solver;
       //Rounding integer variables and reevaluating master obj. value
       masterObjVal = 0;
@@ -1635,7 +1639,7 @@ int main(int argc, char* argv[])
               //TODO: are the criteria correct?
               clock_t current = clock();
               double timeTillNow = (double) (current - begin) / CLOCKS_PER_SEC;
-              timeUp = ((timeTillNow >= 14400) ? true : false);
+              timeUp = ((timeTillNow >= 7200) ? true : false);
               if (!subproblemInfeasible &&
                        (fabs(rho - rhoApproxValue) <= etol)
                     || timeUp) {
@@ -2668,11 +2672,14 @@ int main(int argc, char* argv[])
               /** Setting and solving the master problem **/
               masterBestSolution = new double[masterColNum];
               solver = getSolver(masterProblemSolver, masterMaxThreads, false);
+              clock_t masterBegin = clock();
               masterInfeasible = solve(solver,
                       masterColNum, masterObjCoef, upperObjSense,
                       masterColLb, masterColUb, masterColType,
                       &masterMat, masterRowLb, masterRowUb,
                       &masterObjVal, masterBestSolution);
+              clock_t masterEnd = clock();
+              totalMasterTime += (double) (masterEnd - masterBegin)/CLOCKS_PER_SEC;
               delete solver;
 
               //Rounding integer variables and reevaluating master obj. value
@@ -2898,8 +2905,10 @@ int main(int argc, char* argv[])
 
     clock_t end = clock();
     double elapsed_time = (double)(end - begin) / CLOCKS_PER_SEC;
+    double masterPercent = (totalMasterTime/elapsed_time)*100;
 
     std::cout << "Total wall-clock time = " << elapsed_time << std::endl;
+    std::cout << "Master percentage time = " << masterPercent << "%" << std::endl;
     std::cout << "====================================" << std::endl;
 
     return 0;
