@@ -6,7 +6,7 @@
 /*          Ted Ralphs, Lehigh University                                    */
 /*          Sahar Tahernajad, Lehigh University                              */
 /*                                                                           */
-/* Copyright (C) 2007-2017 Lehigh University, Scott DeNegre, and Ted Ralphs. */
+/* Copyright (C) 2007-2019 Lehigh University, Scott DeNegre, and Ted Ralphs. */
 /* All Rights Reserved.                                                      */
 /*                                                                           */
 /* This software is licensed under the Eclipse Public License. Please see    */
@@ -22,7 +22,7 @@
 #include "MibSModel.hpp"
 #include "MibSHeuristic.hpp"
 #include "MibSConstants.hpp"
-#include "MibSHelp.hpp"
+#include "MibSHelper.hpp"
 
 class MibSModel;
 class MibSCutGenerator;
@@ -61,7 +61,8 @@ private:
     MibSLPSolStatus LPSolStatus_;
 
     /** Optimal value of LL objective **/
-    double objVal_;
+    //double objVal_;
+    std::vector<double> objValVec_;
     int linkIntegralCount_;
 
     double *upperSolutionOrd_;
@@ -73,7 +74,7 @@ private:
     MibSModel *model_;
     MibSHeuristic *heuristic_;
     OsiSolverInterface * lSolver_;
-    OsiSolverInterface * UBSolver_;
+    //OsiSolverInterface * UBSolver_;
     CoinWarmStart * ws_;
    
 public:
@@ -84,7 +85,7 @@ public:
 		    isLowerSolved_(false), isUBSolved_(false),
 		    shouldPrune_(false), isContainedInLinkingPool_(false),
 		    tagInSeenLinkingPool_(MibSLinkingPoolTagIsNotSet),
-		    LPSolStatus_(MibSLPSolStatusUnknown), objVal_(0.0),
+		    LPSolStatus_(MibSLPSolStatusUnknown),
 		    linkIntegralCount_(0){
 	upperSolutionOrd_ = 0;
 	lowerSolutionOrd_ = 0;
@@ -94,7 +95,7 @@ public:
 	model_ = 0;
 	heuristic_= 0;
 	lSolver_ = 0;
-	UBSolver_ = 0;
+	//UBSolver_ = 0;
 	ws_ = 0;
     }
    
@@ -105,21 +106,30 @@ public:
     MibSSolType createBilevel(CoinPackedVector *sol,
 		       MibSModel *mibs=0);
     MibSSolType checkBilevelFeasiblity(bool isRoot);
+    MibSSolType checkBilevelFeasiblityParallel(bool isRoot);
     void gutsOfDestructor();
 
 private:
    
     int findIndex(int index, int size, int * indices);
-    OsiSolverInterface * setUpUBModel(OsiSolverInterface * solver, double objValLL,
-					  bool newOsi, const double *sol = NULL);
+    OsiSolverInterface * setUpDecomposedUBModel(OsiSolverInterface * oSolver,
+						std::vector<double> &objValuesVec,
+						int scenarioIndex,
+						CoinPackedMatrix *truncMatrixG2,
+						double *multA2XOpt);
+    OsiSolverInterface * setUpUBModel(OsiSolverInterface * solver,
+				      std::vector<double> &objValuesVec,
+				      bool newOsi, const double *sol = NULL);
     OsiSolverInterface * setUpModel(OsiSolverInterface * solver,
-				    bool newOsi, const double *sol = NULL);
-    double getLowerObj(const double * sol, double objSense);
+				    bool newOsi, int scenarioIndex = 0,
+				    const double *sol = NULL);
+    double getLowerObj(const double * sol, double objSense, double scenarioIndex);
     int binarySearch(int index,int start, int stop, int * indexArray);
     CoinWarmStart * getWarmStart() {return ws_;}
     void setWarmStart(CoinWarmStart * ws) {ws_ = ws;}
     void addSolutionToSeenLinkingSolutionPool(MibSLinkingPoolTag solTag, std::vector<double>
-		      &shouldStoreValues, double objValue);
+					      &shouldStoreValues,
+					      std::vector<double> &shouldStoreObjValues);
     //void findHeuristicSolutions();
     //void objCutHeuristic();
     //void lowerObjHeuristic();

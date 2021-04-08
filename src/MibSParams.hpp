@@ -6,7 +6,7 @@
 /*          Ted Ralphs, Lehigh University                                    */
 /*          Sahar Tahernajad, Lehigh University                              */
 /*                                                                           */
-/* Copyright (C) 2007-2017 Lehigh University, Scott DeNegre, and Ted Ralphs. */
+/* Copyright (C) 2007-2019 Lehigh University, Scott DeNegre, and Ted Ralphs. */
 /* All Rights Reserved.                                                      */
 /*                                                                           */
 /* This software is licensed under the Eclipse Public License. Please see    */
@@ -35,9 +35,12 @@ class MibSParams : public AlpsParameterSet {
      isBilevelBranchProb,
      warmStartLL,
      doDualFixing,
+     useUBDecompose,
      turnOffOtherCuts,
      printProblemInfo,
      allowRemoveCut,
+     useNewPureIntCut,
+     useProgresHedg,
      endOfBoolParams
   };
   
@@ -68,7 +71,12 @@ class MibSParams : public AlpsParameterSet {
      useBendersCut,
      bendersCutType,
      useIntersectionCut,
-     intersectionCutType,
+     //intersectionCutType,
+     useTypeIC,
+     useTypeWatermelon,
+     useTypeHypercubeIC,
+     useTypeTenderIC,
+     useTypeHybridIC,
      bilevelFreeSetTypeIC,
      solveSecondLevelWhenXYVarsInt,
      solveSecondLevelWhenXVarsInt,
@@ -78,12 +86,37 @@ class MibSParams : public AlpsParameterSet {
      computeBestUBWhenLVarsInt,
      computeBestUBWhenLVarsFixed,
      useLinkingSolutionPool,
+     newPureIntCutDepthLb,
+     newPureIntCutDepthUb,
+     boundCutOptimalType,
+     boundCutDepthLb,
+     boundCutDepthUb,
+     boundCutFreq,
+     boundCutNodeLim,
+     relaxTypeParamBoundCut,
+     maxActiveNodes,
+     isA2Random,
+     isSMPSFormat,
+     sampSizeSAA,
+     evalSampSizeSAA,
+     replNumSAA,
+     lbDistB2SAA,
+     ubDistB2SAA,
+     lbDistA2SAA,
+     ubDistA2SAA,
+     incDistB2NumerSAA,
+     incDistB2DenumSAA,
+     incDistA2NumerSAA,
+     incDistA2DenumSAA,
+     iterationLimitPH,
+     nodeLimitPHSubprob,
      endOfIntParams
   };
 
   /** Double parameters. */
   enum dblParams{
-      ///
+      boundCutTimeLim,
+      optimalRelGapLimitPHSubprob,
       endOfDblParams
   };
 
@@ -91,8 +124,11 @@ class MibSParams : public AlpsParameterSet {
   enum strParams{
       strDummy,
       auxiliaryInfoFile,
+      auxiliaryTimFile,
+      auxiliaryStoFile,
       feasCheckSolver,
       inputFormat,
+      stochasticityType,
       endOfStrParams
   };
 

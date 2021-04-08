@@ -6,7 +6,7 @@
 /*          Ted Ralphs, Lehigh University                                    */
 /*          Sahar Tahernajad, Lehigh University                              */
 /*                                                                           */
-/* Copyright (C) 2007-2017 Lehigh University, Scott DeNegre, and Ted Ralphs. */
+/* Copyright (C) 2007-2019 Lehigh University, Scott DeNegre, and Ted Ralphs. */
 /* All Rights Reserved.                                                      */
 /*                                                                           */
 /* This software is licensed under the Eclipse Public License. Please see    */
@@ -20,9 +20,34 @@
 
 #include "BlisModel.h"
 #include "BlisSolution.h"
+#include "BlisConstraint.h"
+#include "BlisVariable.h"
+#include "BlisNodeDesc.h"
+#include "BlisConfig.h"
+
+#include "BcpsConfig.h"
+
+#include "BlisBranchStrategyMaxInf.h"
+#include "BlisBranchStrategyPseudo.h"
+#include "BlisBranchStrategyRel.h"
+#include "BlisBranchStrategyStrong.h"
+
+#include "BlisHeurRound.h"
+
+#include "CglGomory.hpp"
+#include "CglProbing.hpp"
+#include "CglKnapsackCover.hpp"
+#include "CglOddHole.hpp"
+#include "CglClique.hpp"
+#include "CglFlowCover.hpp"
+#include "CglMixedIntegerRounding2.hpp"
+#include "CglTwomir.hpp"
+
+#include "OsiCbcSolverInterface.hpp"
+
 #include "MibSBilevel.hpp"
 #include "MibSParams.hpp"
-#include "MibSHelp.hpp"
+#include "MibSHelper.hpp"
 #include "MibSConstants.hpp"
 
 class MibSBilevel;
@@ -87,8 +112,14 @@ private:
     /** Number of LL variables **/
     int lowerDim_;
 
+    /** Truncated number of LL variables **/
+    int truncLowerDim_;
+
     /** Number of LL constraints **/
     int lowerRowNum_;
+
+    /** Truncated number of LL constraints **/
+    int truncLowerRowNum_;
 
     /** Number of structural constraints **/
     int structRowNum_;
@@ -235,6 +266,31 @@ private:
     /** MibS Parameters **/
     MibSParams *MibSPar_;
 
+    /** root of the bounding problem tree (for parametric bound cut) **/
+    AlpsTreeNode *boundProbRoot_;
+
+    /** Linking Pool resulting from the bounding problem **/
+    std::map<std::vector<double>, LINKING_SOLUTION> boundProbLinkingPool_;
+
+    /** Gathering cut inf of bounding problem for parametric bound cut **/
+    std::vector<int> boundProbCutPoolSource_; 
+    std::vector<int> boundProbCutPoolStarts_;
+    std::vector<int> boundProbCutPoolIndices_;
+    std::vector<double> boundProbCutPoolValues_;
+    std::vector<double> boundProbCutPoolBounds_;
+    std::vector<int> boundProbLeafNodeCutInf_;
+    std::vector<int> boundProbLeafNodeCutStarts_;
+  
+
+    /** Lower bounds of leaf nodes of boundingProblem **/
+    std::vector<double> boundProbLeafLb_;
+
+    /** Upper bounds of leaf nodes of bounding problem **/
+    std::vector<double> boundProbLeafUb_;
+
+    /** Number of leaf nodes of bounding problem **/
+    int boundProbLeafNum_;
+
     /** Max number of aux columns **/
     //int maxAuxCols_;
     
@@ -248,6 +304,15 @@ private:
 
     std::map<std::vector<double>, LINKING_SOLUTION> seenLinkingSolutions;
     //std::map<std::vector<double>, LINKING_SOLUTION>::iterator it;
+
+    /** Number of scenarios **/
+    int numScenarios_;
+
+    /** Probability of each scenario **/
+    std::vector<double> scenarioProb_;
+
+    /** Matrix A2 for all scenarios **/
+    CoinPackedMatrix *stocA2Matrix_;
     
 public:
 
@@ -287,6 +352,9 @@ public:
     /** Set the lower-level dimension **/
     inline void setLowerDim(int val) {lowerDim_ = val;}
 
+    /** Set the truncated lower-level dimension **/
+    inline void setTruncLowerDim(int val) {truncLowerDim_ = val;}
+
     /** Set the upper-level dimension **/
     inline void setUpperDim(int val) {upperDim_ = val;}
 
@@ -298,6 +366,9 @@ public:
 
     /** Set the lower-level row number **/
     inline void setLowerRowNum(int val) {lowerRowNum_ = val;}
+
+    /** Set the truncated lower-level row number **/
+    inline void setTruncLowerRowNum(int val) {truncLowerRowNum_ = val;}
 
     /** Set the number of structural rows **/
     inline void setStructRowNum(int val) {structRowNum_ = val;}
@@ -361,6 +432,16 @@ public:
 
     /** Set pointer to the matrix of LL vars in LL problem(all constraints are 'L') **/
     void setG2Matrix(CoinPackedMatrix *ptr) {G2Matrix_ = ptr;}
+
+    /** Set pointer to the root node of the bounding problem tree **/
+    void setBoundProbRoot(AlpsTreeNode *ptr) {boundProbRoot_ = ptr;}
+
+    /** Set the linking pool resulting from bounding problem **/
+    void setBoundProbLinkingPool(std::map<std::vector<double>, LINKING_SOLUTION> linkingPool)
+    {boundProbLinkingPool_ = linkingPool;}
+
+    /** Set pointer to the matrix of UL vars in LL problem for all scenarios **/
+    void setStocA2Matrix(CoinPackedMatrix *ptr) {stocA2Matrix_ = ptr;}
   
     /** Get the upper-level file **/
     std::string getUpperFile() {return ulDataFile_;}
@@ -377,8 +458,23 @@ public:
 	return MibSPar_->entry(MibSParams::auxiliaryInfoFile);
     }
 
+    /** Get the time file **/
+    std::string getTimFile()
+    {
+	return MibSPar_->entry(MibSParams::auxiliaryTimFile);
+    }
+
+    /** Get the stochastic file **/
+    std::string getStoFile()
+    {
+	return MibSPar_->entry(MibSParams::auxiliaryStoFile);
+    }
+
     /** Get the lower-level dimension **/
     int getLowerDim() {return lowerDim_;}
+
+    /** Get the truncated lower-level dimension **/
+    int getTruncLowerDim() {return truncLowerDim_;}
 
     /** Get the upper-level dimension **/
     int getUpperDim() {return upperDim_;}
@@ -397,6 +493,9 @@ public:
 
     /** Get the lower-level row number **/
     int getLowerRowNum() {return lowerRowNum_;}
+
+    /** Get the truncated lower-level row number **/
+    int getTruncLowerRowNum() {return truncLowerRowNum_;}
 
     /** Get bjective sense of lower-level problem **/
     double getLowerObjSense() {return lowerObjSense_;}
@@ -473,6 +572,22 @@ public:
     /** Get the pointer to MibsBilevel **/
     inline MibSBilevel *getMibSBilevel() {return bS_;}
 
+    /** Get pointer to the root node of the bounding problem tree **/
+    AlpsTreeNode * getBoundProbRoot() {return boundProbRoot_;}
+
+    /** Get the linking pool resulting from bounding problem **/
+    std::map<std::vector<double>, LINKING_SOLUTION> getBoundProbLinkingPool()
+    {return boundProbLinkingPool_ ;}
+
+    /** Get the number of scenarios **/
+    int getNumScenarios() const {return numScenarios_;}
+
+    /** Get the vector of scenario probabilities **/
+    std::vector<double> getScenarioProb() {return scenarioProb_;}
+
+    /** Get pointer to the matrix of UL vars in LL problem for all scenarios **/
+    CoinPackedMatrix *getStocA2Matrix() const {return stocA2Matrix_;}
+
     /** Get the parameters **/
     MibSParams *MibSPar() {return MibSPar_;} 
 
@@ -480,7 +595,10 @@ public:
     void setBlisParameters();
   
     /** Read auxiliary data file **/
-    void readAuxiliaryData(int numCols, int numRows);
+    void readAuxiliaryData(const CoinPackedMatrix& rowMatrix,
+			   const double* conLB, const double* conUB,
+			   int numCols, int numRows, double infinity,
+			   const char *rowSense);
 
     /** Set auxiliary data directly when using MibS as a library **/
     void loadAuxiliaryData(int lowerColNum, int lowerRowNum,
@@ -503,10 +621,12 @@ public:
 
     /** Set problem data directly when using MibS as a library **/
     void loadProblemData(const CoinPackedMatrix& matrix,
+			 const CoinPackedMatrix& rowMatrix,
 			 const double* colLB, const double* colUB,
 			 const double* obj, const double* rowLB,
 			 const double* rowUB, const char *types,
-			 double objSense, double infinity,  const char *rowSense);
+			 double objSense, double infinity, const char *rowSense,
+			 int lcmDenum = 1);
   
     /** Set integer indices and number of integer variables **/
     void findIntegers();
@@ -570,6 +690,81 @@ public:
     double lowerObjectiveBound();
 
     double interdictionBound();
+
+    //Functions for the progressive hedging method
+    void setupProgresHedg(const CoinPackedMatrix& matrix,
+			  const CoinPackedMatrix& rowMatrix,
+			  const double* varLB, const double* varUB,
+			  const double* objCoef, const double* conLB,
+			  const double* conUB, const char * colType,
+			  double objSense, int truncNumCols, int truncNumRows,
+			  double infinity, const char *rowSense);
+
+    void solveRestrictedPH(const CoinPackedMatrix& matrix,
+			   const CoinPackedMatrix& rowMatrix,
+			   const double* varLB, const double* varUB,
+			   const double* objCoefOrig, const double* conLB,
+			   const double* conUB, const char * colTypeOrig,
+			   double objSense, int truncNumColsOrig, int truncNumRows,
+			   double infinity, const char *rowSense,
+			   double *uLUpper, double *uLLower, int numFixed, int *isFixedUL);
+
+    void printSolutionPH(double *optSol, double optObj, int numIter,
+			 int uColNum);
+
+    double *solvePHProb(const CoinPackedMatrix& rowMatrix, const double *varLB,
+			const double *varUB, double *origObjCoef,
+			const double *conLB, const double *conUB, const char *colType,
+			double objSense, int numCols, int numRows, double infinity,
+			const char *rowSense, int scenarioIndex, int iterIndex,
+			bool &isTimeLimReached, double *wArr, double *implemSol, double *rho,
+			CoinPackedMatrix *filledCoefMatrix);
+
+    //Functions for the SAA method
+    void setupSAA(const CoinPackedMatrix& matrix,
+		  const CoinPackedMatrix& rowMatrix,
+		  const double* varLB, const double* varUB,
+		  const double* objCoef, const double* conLB,
+		  const double* conUB, const char * colType,
+		  double objSense, int truncNumCols, int truncNumRows,
+		  double infinity, const char *rowSense);
+
+    int countScenariosSMPS();
+
+    void printSolutionSAA(int truncNumCols, double estimatedObj,
+			  double estimatedLowerBound, double varLower,
+			  double varUpper, double *bestSol);
+    
+    void findOptGapVarSAA(double *objValSAARepls, double estimatedObj,
+			  double &estimatedLowerBound, double&varLower,
+			  double&varUpper, double *estimatedObjComps);
+    
+    OsiSolverInterface *setUpEvalModels(CoinPackedMatrix *matrixG2, double *optSol,
+					double *allRHS, CoinPackedMatrix *allA2Matrix,
+					const double *origColLb, const double *origColUb,
+					const double* uObjCoef, const char *rowSense,
+					const char *colType, double infinity, int scenarioIndex,
+					int uCols, int uRows, double optLowerObj = 0.0,
+					bool isLowerProblem = true);
+
+    double *solveSAA(const CoinPackedMatrix& matrix,
+		     const CoinPackedMatrix& rowMatrix,
+		     const double* varLB, const double* varUB,
+		     const double* objCoef, const double* conLB,
+		     const double* conUB, const char * colType, int lcmDenum,
+		     double objSense, int truncNumCols, int truncNumRows,
+		     double infinity, const char *rowSense, bool &isTimeLimReached,
+		     double &objSAA, int allScenariosNumSMPS, double *b2Base,
+		     CoinPackedMatrix *matrixA2Base,
+		     const std::vector<std::vector<double> > &fullMatrixA2);
+
+    CoinPackedMatrix *generateSamples(int size, int truncNumCols, int truncNumRows,
+				      int allScenariosNum, const char *rowSense,
+				      double *b2Base, CoinPackedMatrix *matrixA2Base,
+				      const std::vector<std::vector<double> > &fullMatrixA2,
+				      double *rhs);
+
+    int greatestCommonDivisor(int number1, int number2);
 
 private:
 

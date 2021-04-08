@@ -6,21 +6,21 @@
 /*          Ted Ralphs, Lehigh University                                    */
 /*          Sahar Tahernajad, Lehigh University                              */
 /*                                                                           */
-/* Copyright (C) 2007-2017 Lehigh University, Scott DeNegre, and Ted Ralphs. */
+/* Copyright (C) 2007-2019 Lehigh University, Scott DeNegre, and Ted Ralphs. */
 /* All Rights Reserved.                                                      */
 /*                                                                           */
 /* This software is licensed under the Eclipse Public License. Please see    */
 /* accompanying file for terms.                                              */
 /*===========================================================================*/
 
-#ifndef MibSHelp_h_
-#define MibSHelp_h_
+#ifndef MibSHelper_h_
+#define MibSHelper_h_
 
 //#############################################################################
 
 struct LINKING_SOLUTION{
     int tag;
-    double lowerObjValue;
+    std::vector<double> lowerObjValue;
     double UBObjValue;
     std::vector<double> lowerSolution;
     std::vector<double> UBSolution;

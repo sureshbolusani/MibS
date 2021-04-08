@@ -6,7 +6,7 @@
 /*          Ted Ralphs, Lehigh University                                    */
 /*          Sahar Tahernajad, Lehigh University                              */
 /*                                                                           */
-/* Copyright (C) 2007-2017 Lehigh University, Scott DeNegre, and Ted Ralphs. */
+/* Copyright (C) 2007-2019 Lehigh University, Scott DeNegre, and Ted Ralphs. */
 /* All Rights Reserved.                                                      */
 /*                                                                           */
 /* This software is licensed under the Eclipse Public License. Please see    */
@@ -47,6 +47,7 @@ MibSSolution::MibSSolution(int s,
    double etol(mibs->getTolerance());
    int * upperColInd = mibs->getUpperColInd();
    int * lowerColInd = mibs->getLowerColInd();
+   int numScenarios = mibs->getNumScenarios();
 
    if (msgLevel > 5){
       std::cout << std::endl << "Bilevel feasible solution found:" 
@@ -63,7 +64,12 @@ MibSSolution::MibSSolution(int s,
       }
       
       for(i = 0; i < lN; i++){
-	 index = lowerColInd[i];
+	  if(numScenarios == 1){
+	      index = lowerColInd[i];
+	  }
+	  else{
+	      index = uN + i;
+	  }
 	 if((values[index] > etol) || (values[index] < - etol)) 
 	    std::cout << "LL[" << i << "]: " << values[index] << std::endl;
       }
@@ -95,6 +101,7 @@ MibSSolution::print(std::ostream& os) const
    int * upperColInd = localModel_->getUpperColInd();
    int * lowerColInd = localModel_->getLowerColInd();
    std::string * columnName = localModel_->getColumnName();
+   int numScenarios = localModel_->getNumScenarios();
 
    /*   
    for(j = 0; j < size; ++j) {
@@ -134,7 +141,12 @@ MibSSolution::print(std::ostream& os) const
    }
 
    for(j = 0; j < lN; ++j) {
-      index = lowerColInd[j];      
+      if(numScenarios == 1){
+	  index = lowerColInd[j];
+      }
+      else{
+	  index = uN + j;
+      }
       if (values_[index] > 1.0e-15 || values_[index] < -1.0e-15) {
 	 nearInt = floor(values_[index] + 0.5);
 	 if (ALPS_FABS(nearInt - values_[index]) < 1.0e-6) {

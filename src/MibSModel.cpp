@@ -12,36 +12,22 @@
 /* accompanying file for terms.                                              */
 /*===========================================================================*/
 
-#include "BlisModel.h"
-#include "BlisConstraint.h"
-#include "BlisVariable.h"
-#include "BlisNodeDesc.h"
-#include "BlisConfig.h"
-
-#include "BcpsConfig.h"
-
-#include "BlisBranchStrategyMaxInf.h"
-#include "BlisBranchStrategyPseudo.h"
-#include "BlisBranchStrategyRel.h"
-#include "BlisBranchStrategyStrong.h"
-
-#include "BlisHeurRound.h"
-
-#include "CglGomory.hpp"
-#include "CglProbing.hpp"
-#include "CglKnapsackCover.hpp"
-#include "CglOddHole.hpp"
-#include "CglClique.hpp"
-#include "CglFlowCover.hpp"
-#include "CglMixedIntegerRounding2.hpp"
-#include "CglTwomir.hpp"
-
-#include "OsiCbcSolverInterface.hpp"
-
+//#include "BlisModel.h"
+#include "MibSConfig.hpp"
 #include "MibSModel.hpp"
+#ifdef COIN_HAS_SYMPHONY
+#include "symphony.h"
+#include "SymConfig.h"
+#include "OsiSymSolverInterface.hpp"
+#endif
+#ifdef COIN_HAS_CPLEX
+#include "cplex.h"
+#include "OsiCpxSolverInterface.hpp"
+#endif
+
 #include "MibSSolution.hpp"
 #include "MibSCutGenerator.hpp"
-#include "MibSBilevel.hpp"
+//#include "MibSBilevel.hpp"
 #include "MibSTreeNode.hpp"
 #include "MibSConstants.hpp"	
 
@@ -53,7 +39,16 @@
 //NECESSARY DATA MEMBERS ARE DESIGNATED AS PRIVATE
 //IN PARENT CLASS.  DIDNT WANT TO ALTER BLIS CODE
 //#include "MibSBranchStrategyRel.h"
-#include "MibSBranchStrategyStrong.hpp"
+
+#if  COIN_HAS_MPI
+#include "AlpsKnowledgeBrokerMPI.h"
+#else
+#include "AlpsKnowledgeBrokerSerial.h"
+#endif
+
+#ifdef COIN_HAS_C11
+#include <random>
+#endif
 
 //#############################################################################
 MibSModel::MibSModel()
@@ -88,6 +83,7 @@ MibSModel::~MibSModel()
   if(A2Matrix_) delete A2Matrix_;
   if(G2Matrix_) delete G2Matrix_;
   if(bS_) delete bS_;
+  if(stocA2Matrix_) delete stocA2Matrix_;
     
 }
 
@@ -107,11 +103,13 @@ MibSModel::initialize()
   numOrigCons_ = 0;
   objSense_ = 0.0;
   lowerDim_ = 0;
+  truncLowerDim_ = 0;
   lowerObjSense_ = 0.0;
   upperDim_ = 0;
   leftSlope_ = 0;
   rightSlope_ = 0;
   lowerRowNum_ = 0;
+  truncLowerRowNum_ = 0;
   upperRowNum_ = 0;
   origUpperRowNum_ =0;
   structRowNum_ = 0;
@@ -154,6 +152,10 @@ MibSModel::initialize()
   lowerConstCoefMatrix_ = NULL;
   A2Matrix_ = NULL;
   G2Matrix_ = NULL;
+  boundProbRoot_ = NULL;
+  boundProbLeafNum_ = 0;
+  numScenarios_ = 0;
+  stocA2Matrix_ = NULL;
   bS_ = new MibSBilevel();
   //simpleCutOnly_ = true; //FIXME: should make this a parameter
   //bindingMethod_ = "BLAND"; //FIXME: should make this a parameter
@@ -178,7 +180,7 @@ void
 MibSModel::readParameters(const int argnum, const char * const * arglist)
 {
      //std::cout << "Reading parameters ..." << std::endl;
-    AlpsPar_->readFromArglist(argnum, arglist);
+    AlpsPar_->readFromArglist(argnum, arglist); 
     BlisPar_->readFromArglist(argnum, arglist);
     MibSPar_->readFromArglist(argnum, arglist);
 }
@@ -251,165 +253,680 @@ MibSModel::setBlisParameters()
 
 //#############################################################################
 void 
-MibSModel::readAuxiliaryData(int numCols, int numRows)
+MibSModel::readAuxiliaryData(const CoinPackedMatrix& rowMatrix,
+			     const double* conLB, const double* conUB,
+			     int numCols, int numRows, double infinity,
+			     const char *rowSense)
 {
 
-  std::string fileName = getLowerFile();
-  fileCoinReadable(fileName);
-  std::ifstream data_stream(fileName.c_str());
+ std::string stochasticityType(MibSPar_->entry
+			       (MibSParams::stochasticityType));
 
-  std::string inputFormat(MibSPar_->entry
-			  (MibSParams::inputFormat));
-  
-  if (!data_stream){
-      std::cout << "Error opening input data file. Aborting.\n";
-      abort();
-  }
-  
-  std::string key;
-  int iValue(0);
-  std::string cValue;
-  double dValue(0.0);
-  int i(0), j(0), k(0), m(0), p(0), pos(0);
-  int lowerColNum(0), lowerRowNum(0);
+ int isA2Random(MibSPar_->entry(MibSParams::isA2Random));
 
-  while (data_stream >> key){
-     if(key == "N"){ 
-	   data_stream >> iValue;
-	   setLowerDim(iValue);
-     }
-     else if(key == "M"){
-	   data_stream >> iValue;
-	   setLowerRowNum(iValue);
-     }
-     else if(key == "LC"){
-       if(!getLowerColInd())
-	 lowerColInd_ = new int[getLowerDim()];
+ int isSMPSFormat(MibSPar_->entry(MibSParams::isSMPSFormat));
 
-       if(inputFormat == "indexBased"){
-	data_stream >> iValue;
-	lowerColInd_[i] = iValue;
-       }
-       else{
-	   data_stream >> cValue;
-	   for(p = 0; p < numCols; ++p){
-	       if(columnName_[p] == cValue){
-		   pos = p;
-		   break;
-	       }
-	   }
-	   lowerColInd_[i] = pos;
-       }
-       
-	i++;
-     }
-     else if(key == "LR"){
-       if(!getLowerRowInd())
-	 lowerRowInd_ = new int[getLowerRowNum()];
-       
-       if(inputFormat == "indexBased"){
-	   data_stream >> iValue;
-	   lowerRowInd_[j] = iValue;
-       }
-       else{
-	   data_stream >> cValue;
-	   for(p = 0; p < numRows; ++p){
-	       if(rowName_[p] == cValue){
-		   pos = p;
-		   break;
-	       }
-	   }
-	   lowerRowInd_[j] = pos;
-       }
-	
-	j++;
-     }
-     else if(key == "LO"){
-       if(!getLowerObjCoeffs())
-	 lowerObjCoeffs_ = new double[getLowerDim()];
-	
-	data_stream >> dValue;
-	lowerObjCoeffs_[k] = dValue;
-	k++;
-     }
-     else if(key == "OS"){
-	data_stream >> dValue;
-	lowerObjSense_ = dValue; //1 min; -1 max
-     }
-     else if(key == "IC"){
-       if(!getInterdictCost()){
-	 //FIXME: ALLOW MORE THAN ONE ROW
-	 interdictCost_ = new double[getLowerDim()];
-       }
-       
-       data_stream >> dValue;
-       interdictCost_[m] = dValue;
-       m++;
-     }
-     else if(key == "IB"){
-	 isInterdict_ = true;
-       //FIXME: ALLOW MORE THAN ONE ROW
-	data_stream >> dValue;
-	interdictBudget_ = dValue;
-     }
-     else if(key == "@VARSBEGIN"){
-	 pos = -1;
-	 lowerColNum = getLowerDim();
-	 if(!getLowerColInd())
-	     lowerColInd_ = new int[lowerColNum];
-	 if(!getLowerObjCoeffs())
-	     lowerObjCoeffs_ = new double[lowerColNum];
-	 for(i = 0; i < lowerColNum; i++){
-	     data_stream >> cValue;
-	     data_stream >> dValue;
-	     for(p = 0; p < numCols; ++p){
-		 if(columnName_[p] == cValue){
-		     pos = p;
-		     break;
-		 }
+ if((stochasticityType == "stochasticWithoutSAA") && (isSMPSFormat == PARAM_OFF)){
+     throw CoinError("When the SAA method is not used(for the stochastic case), the input format should be SMPS",
+		     "readAuxiliaryData",
+		     "MibSModel");
+ }
+
+ if(stochasticityType == "deterministic"){
+     numScenarios_ = 1;
+     std::string fileName = getLowerFile();
+     if (fileName == ""){
+	 std::string mpsFile(getUpperFile());
+	 int length = mpsFile.length();
+	 char *tmpArr = new char[length + 1];
+	 fileName = mpsFile.erase(length - 3, 3);
+	 fileName.append("aux");
+	 if (fileCoinReadable(fileName)){
+	     fileName.copy(tmpArr, length);
+	     tmpArr[length]='\0';
+	     MibSPar()->setEntry(MibSParams::auxiliaryInfoFile, tmpArr);
+	     std::cout << "Warning: The auxiliary file was not specified. ";
+	     std::cout << std::endl;
+	     std::cout << "MibS used " <<  fileName << " automatically.";
+	     std::cout << std::endl;
+	 }else{
+	     fileName = mpsFile.erase(length - 3, 3);
+	     fileName.append("txt");
+	     if (fileCoinReadable(fileName)){
+		 fileName.copy(tmpArr, length);
+		 tmpArr[length]='\0';
+		 MibSPar()->setEntry(MibSParams::auxiliaryInfoFile, tmpArr);
+		 std::cout << "Warning: The auxiliary file is not specified. ";
+		 std::cout << "MibS selected " <<  fileName << " automatically.";
+		 std::cout << std::endl;
+	     }else{
+		 std::cout << "Error: The auxiliary file is not specified. ";
+		 std::cout << "Aborting." << std::endl;
+		 abort();
 	     }
-	     if(pos < 0){
-		 std::cout << cValue << " does not belong to the list of variables." << std::endl;
+	 }
+	 delete [] tmpArr;
+     }
+     fileCoinReadable(fileName);
+     std::ifstream data_stream(fileName.c_str());
+
+     std::string inputFormat(MibSPar_->entry
+			     (MibSParams::inputFormat));
+
+     if (!data_stream){
+	 std::cout << "Error opening input data file. Aborting.\n";
+	 abort();
+     }
+
+     std::string key;
+     int iValue(0);
+     std::string cValue;
+     double dValue(0.0);
+     int i(0), j(0), k(0), m(0), p(0), pos(0);
+     int lowerColNum(0), lowerRowNum(0);
+
+     while (data_stream >> key){
+	 if(key == "N"){
+	     data_stream >> iValue;
+	     setLowerDim(iValue);
+	     setTruncLowerDim(iValue);
+	 }
+         else if(key == "M"){
+	     data_stream >> iValue;
+	     setLowerRowNum(iValue);
+	     setTruncLowerRowNum(iValue);
+	 }
+	 else if(key == "LC"){
+	     if(!getLowerColInd())
+		 lowerColInd_ = new int[getLowerDim()];
+
+	     if(inputFormat == "indexBased"){
+		 data_stream >> iValue;
+		 lowerColInd_[i] = iValue;
 	     }
 	     else{
-		 lowerObjCoeffs_[pos] = dValue;
+		 data_stream >> cValue;
+		 for(p = 0; p < numCols; ++p){
+		     if(columnName_[p] == cValue){
+			 pos = p;
+		         break;
+		     }
+		 }
 		 lowerColInd_[i] = pos;
 	     }
+
+	     i++;
+	 }
+	 else if(key == "LR"){
+	     if(!getLowerRowInd())
+		 lowerRowInd_ = new int[getLowerRowNum()];
+
+	     if(inputFormat == "indexBased"){
+		 data_stream >> iValue;
+		 lowerRowInd_[j] = iValue;
+	     }
+	     else{
+		 data_stream >> cValue;
+		 for(p = 0; p < numRows; ++p){
+		     if(rowName_[p] == cValue){
+			 pos = p;
+			 break;
+		     }
+		 }
+		 lowerRowInd_[j] = pos;
+	     }
+
+	     j++;
+	 }
+	 else if(key == "LO"){
+	     if(!getLowerObjCoeffs())
+		 lowerObjCoeffs_ = new double[getLowerDim()];
+
+	     data_stream >> dValue;
+	     lowerObjCoeffs_[k] = dValue;
+	     k++;
+	 }
+         else if(key == "OS"){
+	     data_stream >> dValue;
+	     lowerObjSense_ = dValue; //1 min; -1 max
+	 }
+	 else if(key == "IC"){
+	     if(!getInterdictCost()){
+		 //FIXME: ALLOW MORE THAN ONE ROW
+		 interdictCost_ = new double[getLowerDim()];
+	     }
+
+	     data_stream >> dValue;
+             interdictCost_[m] = dValue;
+	     m++;
+	 }
+	 else if(key == "IB"){
+	     isInterdict_ = true;
+	     //FIXME: ALLOW MORE THAN ONE ROW
+	     data_stream >> dValue;
+	     interdictBudget_ = dValue;
+	 }
+         else if(key == "@VARSBEGIN"){
 	     pos = -1;
+	     lowerColNum = getLowerDim();
+	     if(!getLowerColInd())
+		 lowerColInd_ = new int[lowerColNum];
+	     if(!getLowerObjCoeffs())
+		 lowerObjCoeffs_ = new double[lowerColNum];
+	     for(i = 0; i < lowerColNum; i++){
+		 data_stream >> cValue;
+	         data_stream >> dValue;
+		 for(p = 0; p < numCols; ++p){
+		     if(columnName_[p] == cValue){
+			 pos = p;
+		         break;
+		     }
+		 }
+		 if(pos < 0){
+		     std::cout << cValue << " does not belong to the list of variables." << std::endl;
+		 }
+	         else{
+		     lowerObjCoeffs_[pos] = dValue;
+		     lowerColInd_[i] = pos;
+		 }
+	         pos = -1;
+	     }
+	 }
+         else if(key == "@CONSTSBEGIN"){
+	     pos = -1;
+	     lowerRowNum = getLowerRowNum();
+	     if(!getLowerRowInd())
+		 lowerRowInd_ = new int[lowerRowNum];
+	     for(i = 0; i < lowerRowNum; i++){
+		 data_stream >> cValue;
+		 for(p = 0; p < numRows; ++p){
+		     if(rowName_[p] == cValue){
+			 pos = p;
+			 break;
+		     }
+		 }
+		 if(pos < 0){
+		     std::cout << cValue << " does not belong to the list of constraints." << std::endl;
+		 }
+		 else{
+		     lowerRowInd_[i] = pos;
+		 }
+		 pos = -1;
+	     }
 	 }
      }
-     else if(key == "@CONSTSBEGIN"){
-	 pos = -1;
-	 lowerRowNum = getLowerRowNum();
-	 if(!getLowerRowInd())
-	     lowerRowInd_ = new int[lowerRowNum];
-	 for(i = 0; i < lowerRowNum; i++){
-	     data_stream >> cValue;
-	     for(p = 0; p < numRows; ++p){
-		 if(rowName_[p] == cValue){
-		     pos = p;
+
+     data_stream.close();
+  
+     std::cout << "LL Data File: " << getLowerFile() << "\n";
+     std::cout << "Number of LL Variables:   "
+	       << getLowerDim() << "\n\n";
+ }
+ else if(stochasticityType == "stochasticWithoutSAA"){//the format is smps necessarily
+     std::string timFileName = getTimFile();
+     fileCoinReadable(timFileName);
+
+     std::string stoFileName = getStoFile();
+     fileCoinReadable(stoFileName);
+
+     std::ifstream timData_stream(timFileName.c_str());
+     std::ifstream stoData_stream(stoFileName.c_str());
+
+     if(!timData_stream){
+	 std::cout << "Error opening input time data file. Aborting.\n";
+	 abort();
+     }
+
+     if(!stoData_stream){
+	 std::cout << "Error opening input stochastic data file. Aborting.\n";
+	 abort();
+     }
+
+     int i(0), j(0), p(0);
+     double etol(etol_);
+     std::string key, fLColName, fLRowName;
+     int iValue(0), posRow(-1), posCol(-1), index(0), rowNumElem(0), scCount(0), start(0);
+     double dValue(0.0), element(0.0);
+     int uColNum(0), lColNum(0), uRowNum(0), lRowNum(0), totalRowNum(0);
+     int truncRowNum(0), truncLColNum(0), truncLRowNum(0);
+     bool isFirstScenario(true);
+     CoinPackedVector appendedRow;
+     CoinPackedVector row;
+     int *rowInd = NULL;
+     double *rowElem = NULL;
+     CoinPackedVector col;
+     std::vector<double> stocLowerRhs;
+
+     //read time file
+     //ignoring first three lines
+     for(i = 0; i < 7; i++){
+	 timData_stream >> key;
+     }
+
+     //name of first ll variable
+     timData_stream >> key;
+     fLColName = key;
+
+     //name of first ll row
+     timData_stream >> key;
+     fLRowName = key;
+
+     for(p = 0; p < numCols; p++){
+	 if(columnName_[p] == fLColName){
+	     posCol = p;
+	     break;
+	 }
+     }
+     if(posCol < 0){
+	 std::cout << fLColName << " does not belong to the list of variables." << std::endl;
+	 abort();
+     }
+     else{
+	 uColNum = p;
+	 truncLColNum = numCols - uColNum;
+	 setTruncLowerDim(truncLColNum);
+     }
+
+     posRow = -1;
+     for(p = 0; p < numRows; p++){
+	 if(rowName_[p] == fLRowName){
+	     posRow = p;
+	     break;
+	 }
+     }
+     if(posRow < 0){
+	 std::cout << fLRowName << " does not belong to the list of constraints." << std::endl;
+	 abort();
+     }
+     else{
+	 uRowNum = p;
+	 truncLRowNum = numRows - uRowNum;
+	 setTruncLowerRowNum(truncLRowNum);
+     }
+     timData_stream >> key;
+
+     //set lower objective function coeffs and sense
+     lowerObjCoeffs_ = new double[truncLColNum];
+     for(i = 0; i < truncLColNum; i++){
+	 timData_stream >> key;
+	 timData_stream >> dValue;
+	 lowerObjCoeffs_[i] = dValue;
+     }
+     timData_stream >> key;
+     timData_stream >> iValue;
+     lowerObjSense_ = iValue;//1 min; -1 max
+
+     //saharSto: do we need fill lowerColInd_ and lowerRowInd_?
+     //set lower col and row indices
+     lowerColInd_ = new int[truncLColNum];
+     lowerRowInd_ = new int[truncLRowNum];
+     CoinIotaN(lowerColInd_, truncLColNum, uColNum);
+     CoinIotaN(lowerRowInd_, truncLRowNum, uRowNum);
+
+     timData_stream.close();
+
+     //read stochastic data
+     //find number of scenarios
+     while(stoData_stream >> key){
+	 if(key == "SC"){
+	     numScenarios_ ++;
+	 }
+     }
+     stoData_stream.close();
+
+     lColNum = truncLColNum * numScenarios_;
+     lRowNum = truncLRowNum * numScenarios_;
+     totalRowNum = uRowNum + lRowNum;
+     truncRowNum = uRowNum + truncLRowNum;
+     setLowerDim(lColNum);
+     setLowerRowNum(lRowNum);
+     //saharSto3: check it
+     //stoData_stream(stoFileName.c_str());
+     stoData_stream.open(stoFileName.c_str());
+
+     origRowLb_ = new double[totalRowNum];
+     origRowUb_ = new double[totalRowNum];
+     CoinFillN(origRowLb_, totalRowNum, -1 * infinity);
+     CoinFillN(origRowUb_, totalRowNum, infinity);
+     
+     CoinPackedMatrix *stocMatrixA2 = 0;
+     stocMatrixA2 = new CoinPackedMatrix(false, 0, 0);
+     stocMatrixA2->setDimensions(0, uColNum);
+
+     //saharSto3: check it
+     //double **fullMatrixA2 = NULL;
+     //double **fullMatrixA2Copy = NULL;
+     std::vector<std::vector<double> > fullMatrixA2;
+     std::vector<std::vector<double> > fullMatrixA2Copy;
+
+     if(isA2Random != PARAM_OFF){
+	 /*fullMatrixA2 = new double*[truncLRowNum];
+	 fullMatrixA2Copy = new double*[truncLRowNum];
+	 for(i = 0; i < truncLRowNum; i++){
+	     //saharSto3: check if they are filled with zeros
+	     fullMatrixA2[i] = new double[uColNum]();
+	     fullMatrixA2Copy[i] = new double[uColNum]();
+	     }*/
+	 fullMatrixA2.resize(truncLRowNum, std::vector<double>(uColNum, 0.0));
+	 fullMatrixA2Copy.resize(truncLRowNum, std::vector<double>(uColNum, 0.0));
+     }
+
+     for(i = uRowNum; i < numRows; i++){
+	 row = rowMatrix.getVector(i);
+	 rowInd = row.getIndices();
+	 rowElem = row.getElements();
+	 rowNumElem = row.getNumElements();
+	 for(j = 0; j < rowNumElem; j++){
+	     index = rowInd[j];
+	     element = rowElem[j];
+	     if(index < uColNum){
+		 appendedRow.insert(index, element);
+		 if(isA2Random != PARAM_OFF){
+		     fullMatrixA2[i - uRowNum][index] = element;
+		     fullMatrixA2Copy[i - uRowNum][index] = element;
+		 }
+	     }
+	 }
+	 //saharSto: when A2 is not random, we just store matrix A2
+	 //as stocMatrixA2 because we know that it is the same
+	 //for all scenarios
+	 if(isA2Random == PARAM_OFF){
+	     stocMatrixA2->appendRow(appendedRow);
+	 }
+	 appendedRow.clear();
+     }
+
+     //ignore first two lines
+     for(i = 0; i < 4; i++){
+	 stoData_stream >> key;
+     }
+
+     while(stoData_stream >> key){
+	 if(key == "SC"){
+	     stoData_stream >> key;
+	     stoData_stream >> key;
+	     stoData_stream >> dValue;
+	     scenarioProb_.push_back(dValue);
+	     stoData_stream >> key;
+	     start = uRowNum + scCount * truncLRowNum;
+	     CoinDisjointCopyN(conLB + uRowNum, truncLRowNum, origRowLb_ + start);
+	     CoinDisjointCopyN(conUB + uRowNum, truncLRowNum, origRowUb_ + start);
+	     if((isA2Random != PARAM_OFF) && (isFirstScenario == false)){
+		 //start = scCount * truncLRowNum;
+		 for(i = 0; i < truncLRowNum; i++){
+		     for(j = 0; j < uColNum; j++){
+			 element = fullMatrixA2Copy[i][j];
+			 if(fabs(element) > etol){
+			     appendedRow.insert(j,element); 
+			 }
+			 fullMatrixA2Copy[i][j] = fullMatrixA2[i][j];
+		     }
+		     stocMatrixA2->appendRow(appendedRow);
+		     appendedRow.clear();
+		 }
+	     }
+	     scCount ++;
+	     if(isFirstScenario == true){
+		 isFirstScenario = false;
+	     }
+	 }
+	 else if(key == "ENDATA"){
+	     if(isA2Random != PARAM_OFF){
+		 for(i = 0; i < truncLRowNum; i++){
+		     for(j = 0; j < uColNum; j++){
+			 element = fullMatrixA2Copy[i][j];
+			 if(fabs(element) > etol){
+			     appendedRow.insert(j,element);
+			 }
+		     }
+		     stocMatrixA2->appendRow(appendedRow);
+		     appendedRow.clear();
+		 }
+	     }
+	     break;
+	 }
+	 else if(key == "RHS"){
+	     stoData_stream >> key;
+	     stoData_stream >> dValue;
+	     posRow = -1;
+	     for(p = 0; p < numRows; p++){
+		 if(rowName_[p] == key){
+		     posRow = p;
 		     break;
 		 }
 	     }
-	     if(pos < 0){
-		 std::cout << cValue << " does not belong to the list of constraints." << std::endl;
+	     if(posRow < 0){
+		 std::cout << key << " does not belong to the list of constraints." << std::endl;
+		 throw CoinError("Wrong constriant name",
+				 "readAuxiliaryData",
+				 "MibSModel");
+	     }
+	     else if(posRow < uRowNum){
+		 throw CoinError("Upper-level RHS cannot be random",
+				 "readAuxiliaryData",
+				 "MibSModel");
 	     }
 	     else{
-		 lowerRowInd_[i] = pos;
+		 index = (scCount - 1) * truncLRowNum + posRow;
+		 if(rowSense[posRow] == 'L'){
+		     origRowUb_[index] = dValue;
+		 }
+		 else{
+		     origRowLb_[index] = dValue;
+		 }
+	     }  
+	 }
+	 else{
+	     posCol = -1;
+	     for(p = 0; p < numCols; p++){
+		 if(columnName_[p] == key){
+		     posCol = p;
+		     break;
+		 }
 	     }
-	     pos = -1;
+	     if(posCol < 0){
+		 std::cout << key << " does not belong to the list of variables." << std::endl;
+		 throw CoinError("Wrong variable name",
+				 "readAuxiliaryData",
+				 "MibSModel");
+	     }
+	     else if(posCol >= uColNum){
+		 throw CoinError("Lower-level coefficients cannot be random",
+				 "readAuxiliaryData",
+				 "MibSModel");
+	     }
+	     else{
+		 stoData_stream >> key;
+		 stoData_stream >> dValue;
+		 posRow = -1;
+		 for(p = 0; p < numRows; p++){
+		     if(rowName_[p] == key){
+			 posRow = p;
+			 break;
+		     }
+		 }
+		 if(posRow < 0){
+		     std::cout << key << " does not belong to the list of constraints." << std::endl;
+		     throw CoinError("Wrong constriant name",
+				     "readAuxiliaryData",
+				     "MibSModel");
+		 }
+		 else if(posRow < uRowNum){
+		     throw CoinError("Coefficients of lower-level constraints cannot be random",
+				     "readAuxiliaryData",
+				     "MibSModel");
+		 }
+		 else{
+		     fullMatrixA2Copy[posRow - uRowNum][posCol] = dValue;
+		 }
+	     }
 	 }
      }
-  }
 
-  data_stream.close();
-  
-  std::cout << "LL Data File: " << getLowerFile() << "\n";
-  std::cout << "Number of LL Variables:   " 
-	    << getLowerDim() << "\n\n";
+     setStocA2Matrix(stocMatrixA2);
+
+     stoData_stream.close();
+
+     std::cout << "Time Data File: " << getTimFile() << "\n";
+     std::cout << "Stochastic Data File: " << getStoFile() << "\n";
+     std::cout << "Number of LL Variables:   "
+	       << truncLColNum << "\n\n";
+ }
+ else{
+     int iValue(0), pos(-1);
+     double dValue(0.0);
+     std::string key, fLColName, fLRowName;;
+     int i(0), k(0), p(0);
+     int uColNum(0), uRowNum(0);
+     int truncLColNum(0), truncLRowNum(0);
+
+     if(isSMPSFormat != PARAM_ON){
+	 std::string fileName = getLowerFile();
+         fileCoinReadable(fileName);
+         std::ifstream data_stream(fileName.c_str());
+
+         if(!data_stream){
+	     std::cout << "Error opening input data file. Aborting.\n";
+	     abort();
+	 }
+
+         while(data_stream >> key){
+	     if(key == "N"){
+		 data_stream >> iValue;
+	         truncLColNum = iValue;
+	         setTruncLowerDim(iValue);
+	     }
+	     else if(key == "M"){
+		 data_stream >> iValue;
+	         truncLRowNum = iValue;
+	         setTruncLowerRowNum(iValue);
+	     }
+	     else if(key == "LC"){
+		 data_stream >> iValue;
+	     }
+	     else if(key == "LR"){
+		 data_stream >> iValue;
+	     }
+	     else if(key == "LO"){
+		 if(!getLowerObjCoeffs())
+		     lowerObjCoeffs_ = new double[getTruncLowerDim()];
+		 data_stream >> dValue;
+	         lowerObjCoeffs_[k] = dValue;
+	         k++;
+	     }
+	     else if(key == "OS"){
+		 data_stream >> dValue;
+	         lowerObjSense_ = dValue; //1 min; -1 max
+	     }
+	 }
+	 uColNum = numCols - truncLColNum;
+	 uRowNum = numRows - truncLRowNum;
+	 
+	 data_stream.close();
+     }
+     else{
+	 std::string timFileName = getTimFile();
+	 fileCoinReadable(timFileName);
+
+	 std::ifstream timData_stream(timFileName.c_str());
+
+	 if(!timData_stream){
+	     std::cout << "Error opening input time data file. Aborting.\n";
+	     abort();
+	 }
+
+	 //read time file
+	 //ignoring first three lines
+	 for(i = 0; i < 7; i++){
+	     timData_stream >> key;
+	 }
+
+	 //name of first ll variable
+	 timData_stream >> key;
+	 fLColName = key;
+
+	 //name of first ll row
+	 timData_stream >> key;
+	 fLRowName = key;
+
+	 for(p = 0; p < numCols; p++){
+	     if(columnName_[p] == fLColName){
+		 pos = p;
+		 break;
+	     }
+	 }
+	 if(pos < 0){
+	     std::cout << fLColName << " does not belong to the list of variables." << std::endl;
+	     abort();
+	 }
+	 else{
+	     uColNum = p;
+	     truncLColNum = numCols - uColNum;
+	     setTruncLowerDim(truncLColNum);
+	 }
+
+	 pos = -1;
+	 for(p = 0; p < numRows; p++){
+	     if(rowName_[p] == fLRowName){
+		 pos = p;
+		 break;
+	     }
+	 }
+	 if(pos < 0){
+	     std::cout << fLRowName << " does not belong to the list of constraints." << std::endl;
+	     abort();
+	 }
+	 else{
+	     uRowNum = p;
+	     truncLRowNum = numRows - uRowNum;
+	     setTruncLowerRowNum(truncLRowNum);
+	 }
+	 timData_stream >> key;
+	 
+	 //set lower objective function coeffs and sense
+	 if(!getLowerObjCoeffs())
+	     lowerObjCoeffs_ = new double[truncLColNum];
+     
+	 for(i = 0; i < truncLColNum; i++){
+	     timData_stream >> key;
+	     timData_stream >> dValue;
+	     lowerObjCoeffs_[i] = dValue;
+	 }
+	 timData_stream >> key;
+	 timData_stream >> iValue;
+	 lowerObjSense_ = iValue;//1 min; -1 max
+
+	 timData_stream.close();
+     }
+
+     //saharSto:in the saa format, it is assumed that
+     //The indices of upper-level variables are 0,...,n1-1 and
+     //the indices of lower-level variables are n1,...,n1+n2-1
+     //and the same for upper- and lower-level constraints
+     //saharSto: we do not need LC and LR, but I considered them in case we
+     //want to use the input files for deterministic problems
+     if(!getLowerColInd())
+	 lowerColInd_ = new int[truncLColNum];
+     CoinIotaN(lowerColInd_, truncLColNum, uColNum);
+
+     if(!getLowerRowInd())
+	 lowerRowInd_ = new int[truncLRowNum];
+     CoinIotaN(lowerRowInd_, truncLRowNum, uRowNum);
+
+     if(isSMPSFormat == PARAM_ON){
+	 std::cout << "Time Data File: " << getTimFile() << "\n";
+	 std::cout << "Stochastic Data File: " << getStoFile() << "\n";
+	 std::cout << "Number of LL Variables:   "
+		   << truncLColNum << "\n\n";
+	 
+     }
+     else{
+	 std::cout << "LL Data File: " << getLowerFile() << "\n";
+	 std::cout << "Number of LL Variables:   "
+		   << getTruncLowerDim() << "\n\n";
+     }
+ }
 }
-
-
 
 //#############################################################################
 void 
@@ -561,6 +1078,7 @@ MibSModel::readProblemData()
    mps->messageHandler()->setLogLevel(msgLevel);
    
    CoinPackedMatrix matrix = *(mps->getMatrixByCol());
+   CoinPackedMatrix rowMatrix = *(mps->getMatrixByRow());
 
    double objSense(1.0);
    
@@ -634,9 +1152,41 @@ MibSModel::readProblemData()
 
    const char* rowSense = mps->getRowSense();
 
-   readAuxiliaryData(numCols, numRows); // reads in lower-level vars, rows, obj coeffs 
+   //readAuxiliaryData(numCols, numRows); // reads in lower-level vars, rows, obj coeffs
+   readAuxiliaryData(rowMatrix, conLB, conUB, numCols, numRows,
+		     mps->getInfinity(), rowSense); // reads in lower-level vars, rows, obj coeffs
+
+   std::string stochasticityType(MibSPar_->entry
+				 (MibSParams::stochasticityType));
+
+   int useProgresHedg(MibSPar_->entry(MibSParams::useProgresHedg));
+
+   if(stochasticityType == "stochasticWithSAA"){
+       setupSAA(matrix, rowMatrix, varLB, varUB, objCoef, conLB, conUB, colType,
+		objSense, numCols, numRows, mps->getInfinity(), rowSense);
+   }
+
+   if(useProgresHedg == true){
+       int uColNum = numCols - getTruncLowerDim();
+       for(j = 0; j < uColNum; j++){
+	   if(colType[j] != 'B'){
+	       throw CoinError("The progressive hedging heuristic can be used only when all UL variables are binary",
+			       "readProblemData", "MibSModel");
+	   }
+       }
+
+       if(stochasticityType != "stochasticWithoutSAA"){
+	   throw CoinError("The progressive hedging heuristic can be used only when the parameter stochasticityType is set to stochasticWithoutSAA",
+			   "readProblemData", "MibSModel");
+       }
+       else{
+	   setupProgresHedg(matrix, rowMatrix, varLB, varUB, objCoef, conLB, conUB, colType,
+			    objSense, numCols, numRows, mps->getInfinity(), rowSense);
+       }
+   }
    
-   loadProblemData(matrix, varLB, varUB, objCoef, conLB, conUB, colType, 
+   
+   loadProblemData(matrix, rowMatrix, varLB, varUB, objCoef, conLB, conUB, colType, 
 		   objSense, mps->getInfinity(), rowSense);
 
    delete [] colType;
@@ -650,47 +1200,2381 @@ MibSModel::readProblemData()
 }
 
 //#############################################################################
+//this function is used when user selects to use progressive hedging heuristic
+//it is assumed that all subproblems are solved untile finding at least one feasible solution
+void
+MibSModel::setupProgresHedg(const CoinPackedMatrix& matrix,
+			    const CoinPackedMatrix& rowMatrix,
+			    const double* varLB, const double* varUB,
+			    const double* objCoef, const double* conLB,
+			    const double* conUB, const char * colType,
+			    double objSense, int truncNumCols, int truncNumRows,
+			    double infinity, const char *rowSense)
+{
+    const int clockType = AlpsPar()->entry(AlpsParams::clockType);
+    broker_->timer().setClockType(clockType);
+    broker_->subTreeTimer().setClockType(clockType);
+    broker_->tempTimer().setClockType(clockType);
+    broker_->timer().start();
+    
+    //saharPH: define these as parameter later
+    int maxPHIteration(MibSPar_->entry(MibSParams::iterationLimitPH));
+    //double rho(1.0);
+    int isA2Random(MibSPar_->entry(MibSParams::isA2Random));
+
+    int i(0), j(0), k(0);
+    int cntIter(0), index(0), rowNumElem(0);
+    double element(0.0), optObj(0.0), value(0.0), removedObj(0.0);
+    double maxVal(0.0), minVal(0.0);
+    double etol(etol_);
+    bool shouldTerminate(false), isTimeLimReached(false);
+    bool isImplementable(true), isFixed(true), solveRestrictedProb(false);
+    bool maxFound(false), minFound(false);
+    int truncLColNum(getTruncLowerDim());
+    int truncLRowNum(getTruncLowerRowNum());
+    int uColNum(truncNumCols - truncLColNum);
+    int uRowNum(truncNumRows - truncLRowNum);
+    int numScenarios(getNumScenarios());
+    std::vector<double> scenarioProb(getScenarioProb());
+    CoinPackedVector row;
+    CoinPackedVector appendedRow;
+    int *rowInd = NULL;
+    double *rowElem = NULL;
+    double *optSol = NULL;
+
+    double *rho = new double[uColNum];
+    CoinZeroN(rho, uColNum);
+    
+
+    double **wArrs = new double *[numScenarios];
+    for(i = 0; i < numScenarios; i++){
+	wArrs[i] = new double[uColNum]();
+    }
+
+    double *tmpWArr = new double[uColNum];
+    CoinZeroN(tmpWArr, uColNum);
+
+    double *implemSol = new double[uColNum];
+    CoinZeroN(implemSol, uColNum);
+
+    double *implemSolBack = new double[uColNum];
+    CoinZeroN(implemSolBack, uColNum);
+
+    int *newIndexUL = new int[uColNum];
+    CoinZeroN(newIndexUL, uColNum);
+    int numFixed(0);
+
+    double **allScenarioSols = new double *[numScenarios];
+    for(i = 0; i < numScenarios; i++){
+	allScenarioSols[i] = new double[uColNum]();
+    }
+
+    double *uLUpper = NULL;
+    double *uLLower = NULL;
+    double *scenarioSol = NULL;
+
+    double *copyObjCoef = new double[truncNumCols];
+    if(objSense == 1){
+	memcpy(copyObjCoef, objCoef, sizeof(double) * truncNumCols);
+    }
+    else{
+	for(i = 0; i < truncNumCols; i++){
+	    copyObjCoef[i] = -1 * objCoef[i];
+	}
+    }
+
+    CoinPackedMatrix *stocA2Matrix(getStocA2Matrix());
+    CoinPackedMatrix *filledCoefMatrix = 0;
+    if(isA2Random == PARAM_OFF){
+	filledCoefMatrix = new CoinPackedMatrix(false, 0, 0);
+	filledCoefMatrix->setDimensions(0, truncNumCols);
+	for(i = 0; i < uRowNum; i++){
+	    filledCoefMatrix->appendRow(rowMatrix.getVector(i));
+	}
+	for(i = 0; i < truncLRowNum; i++){
+	    appendedRow = stocA2Matrix->getVector(i);
+	    row = rowMatrix.getVector(i + uRowNum);
+	    rowInd = row.getIndices();
+	    rowElem = row.getElements();
+	    rowNumElem = row.getNumElements();
+	    for(j = 0; j < rowNumElem; j++){
+		index = rowInd[j];
+		if(index >= uColNum){
+		    appendedRow.insert(index, rowElem[j]);
+		}
+	    }
+	    filledCoefMatrix->appendRow(appendedRow);
+	    appendedRow.clear();
+	}
+    }
+
+    while(shouldTerminate == false){
+	memcpy(implemSolBack, implemSol, sizeof(double) * uColNum);
+	//CoinZeroN(foundSol, numScenarios);
+	CoinZeroN(implemSol, uColNum);
+	isImplementable = true;
+	//numFoundSol = 0;
+	if(cntIter > 0){
+	    //compute rho
+	    for(j = 0; j < uColNum; j++){
+		maxVal = 0.0;
+		minVal = 1.0;
+		maxFound = false;
+		minFound = false;
+		for(k = 0; k < numScenarios; k++){
+		    value = allScenarioSols[k][j];
+		    if(maxFound == false){
+			if(fabs(value - maxVal) > 0.5){
+			    maxVal = 1.0;
+			    maxFound = true;
+			}
+		    }
+		    if(minFound == false){
+			if(fabs(minVal - value) > 0.5){
+			    minVal = 0.0;
+			    minFound = true;
+			}
+		    }
+		    if((minFound == true) && (maxFound == true)){
+			break;
+		    }
+		}
+		rho[j] = copyObjCoef[j]/(maxVal - minVal + 1);
+	    }
+	}
+	for(i = 0; i < numScenarios; i ++){
+	    isTimeLimReached = false;
+	    if(cntIter > 0){
+		//compute w
+		for(j = 0; j < uColNum; j++){
+		    tmpWArr[j] = wArrs[i][j] + rho[j] * (allScenarioSols[i][j] - implemSolBack[j]);
+		    wArrs[i][j] = tmpWArr[j];
+		}
+	    }
+
+	    std::cout << "Solving scenario " << i << " of iteration " << cntIter << std::endl;
+	    scenarioSol = solvePHProb(rowMatrix,varLB, varUB, copyObjCoef, conLB,
+				      conUB, colType, objSense, truncNumCols, truncNumRows,
+				      infinity, rowSense, i, cntIter, isTimeLimReached,
+				      tmpWArr, implemSolBack, rho, filledCoefMatrix);
+
+	    if(isTimeLimReached == true){
+		std::cout << "Time limit is reached" << std::endl;
+		goto TERM_SETUPPH;
+	    }
+
+	    if(scenarioSol == NULL){
+		throw CoinError("It is assumed that all subproblems are solved until finding at least one feasible solution",
+				"setupProgresHedg", "MibSModel");
+	    }
+
+	    //if(scenarioSol != NULL){
+	    //foundSol[i] = 1;
+	    //numFoundSol ++;
+	    for(j = 0; j < uColNum; j++){
+		value = scenarioSol[j];
+		allScenarioSols[i][j] = value;
+		implemSol[j] += scenarioProb[i] * value;
+	    }
+	    delete [] scenarioSol;
+		//}
+	}
+
+	/*for(j = 0; j < uColNum; j++){
+	    implemSol[j] = implemSol[j]/numFoundSol;
+	    }*/
+
+	cntIter ++;
+	//if(numFoundSol == numScenarios){
+	for(j = 0; j < uColNum; j++){
+	    value = implemSol[j];
+	    for(i = 0; i < numScenarios; i++){
+		if(fabs(allScenarioSols[i][j] - value) > etol){
+		    isImplementable = false;
+		    break;
+		}
+	    }
+	    if(isImplementable == false){
+		break;
+	    }
+	}
+	    //}
+	    //else{
+	    //isImplementable = false;
+	    //}
+
+	if(isImplementable == true){
+	    optObj = 0;
+	    for(i = 0; i < uColNum; i++){
+		value = floor(implemSol[i] + 0.5);
+		//saharPH: correct it
+		optObj += value * objCoef[i];
+	    }
+	    std::cout << "CPU time for solving subproblems: " << broker_->timer().getCpuTime() << std::endl;
+	    std::cout << "Wallclock time for solving subproblems: " << broker_->timer().getWallClock() << std::endl;
+	    printSolutionPH(implemSol, optObj, cntIter, uColNum);
+	    shouldTerminate = true;
+	}
+	else if(cntIter == maxPHIteration){
+	    solveRestrictedProb = true;
+	    shouldTerminate = true;
+	    if(uLUpper == NULL){
+		uLUpper = new double[uColNum];
+	    }
+	    if(uLLower == NULL){
+		uLLower = new double[uColNum];
+	    }
+	    //store the fixed part
+	    removedObj = 0.0;
+	    numFixed = 0;
+	    for(j = 0; j < uColNum; j++){
+		value = implemSol[j];
+		isFixed = true;
+		for(i = 0; i < numScenarios; i++){
+		    //if(foundSol[i] == 1){
+		      if(fabs(allScenarioSols[i][j] - value) > etol){
+			  uLUpper[j] = 1;
+			  uLLower[j] = 0;
+			  isFixed = false;
+			  newIndexUL[j] = j - numFixed;
+			  break;
+		      }
+			//}
+		}
+		/*if(isFixed == false){
+  if((implemSol[j] - 0.45) < etol){
+    isFixed = true;
+    value = 0.0;
+  }
+  else if((0.55 - implemSol[j]) < etol){
+    isFixed = true;
+    value = 1.0;
+  }
+  }*/
+		if(isFixed == true){
+		    newIndexUL[j] = -1;
+		    numFixed ++;
+		    value = floor(value + 0.5);
+		    uLUpper[j] = value;
+		    uLLower[j] = value;
+		    removedObj += copyObjCoef[j] * value;
+		    std:: cout << "x[" << j << "] is fixed to " << value << std::endl;
+		}
+	    }//
+	}
+    }
+
+ TERM_SETUPPH:
+    delete [] copyObjCoef;
+    delete [] implemSol;
+    delete [] implemSolBack;
+    delete [] rho;
+    delete [] tmpWArr;
+    for(i = 0; i < numScenarios; i++){
+	delete [] wArrs[i];
+	delete [] allScenarioSols[i];
+    }
+    delete [] wArrs;
+    delete [] allScenarioSols;
+    if(filledCoefMatrix){
+	delete filledCoefMatrix;
+    }
+    if(solveRestrictedProb == true){
+	std::cout << "Removed obj = " << removedObj << std::endl;
+	std::cout << "CPU time for solving subproblems: " << broker_->timer().getCpuTime() << std::endl;
+	std::cout << "Wallclock time for solving subproblems: " << broker_->timer().getWallClock() << std::endl;
+	solveRestrictedPH(matrix, rowMatrix, varLB, varUB, objCoef,
+			  conLB, conUB, colType, objSense, truncNumCols,
+			  truncNumRows, infinity, rowSense, uLUpper, uLLower, numFixed, newIndexUL);
+	std::cout << "Total CPU time: " << broker_->timer().getCpuTime() << std::endl;
+	std::cout << "Total wallclock time: " << broker_->timer().getWallClock() << std::endl;
+    }
+
+    exit(0);
+
+}
+
+//#############################################################################
+void
+MibSModel::solveRestrictedPH(const CoinPackedMatrix& matrix,
+			     const CoinPackedMatrix& rowMatrix,
+			     const double* varLB, const double* varUB,
+			     const double* objCoefOrig, const double* conLB,
+			     const double* conUB, const char * colTypeOrig,
+			     double objSense, int truncNumColsOrig, int truncNumRows,
+			     double infinity, const char *rowSense,
+			     double *uLUpper, double *uLLower, int numFixed, int* newIndexUL)
+{
+
+    int isA2Random(MibSPar_->entry(MibSParams::isA2Random));
+
+    std::string feasCheckSolver
+	= MibSPar_->entry(MibSParams::feasCheckSolver);
+
+    double timeLimit(AlpsPar()->entry(AlpsParams::timeLimit));
+
+    int clockType(AlpsPar()->entry(AlpsParams::clockType));
+
+    bool useUBDecompose(MibSPar_->entry(MibSParams::useUBDecompose));
+
+    int i(0), j(0), k(0);
+    int index(0);
+    double value(0.0), rowNumElem(0.0);
+    double etol(etol_);
+    int truncLColNum(getTruncLowerDim());
+    int truncLRowNum(getTruncLowerRowNum());
+    int uColNumOrig(truncNumColsOrig - truncLColNum);
+    int uColNum(uColNumOrig - numFixed);
+    int uRowNum(truncNumRows - truncLRowNum);
+    int lColNum(truncLColNum * numScenarios_);
+    int lRowNum(truncLRowNum * numScenarios_);
+    int truncNumCols(uColNum + truncLColNum);
+    int numCols(uColNum + lColNum);
+    int numRows(uRowNum + lRowNum);
+    CoinPackedVector row;
+    CoinPackedVector appendedRow;
+    int *rowInd = NULL;
+    double *rowElem = NULL;
+    double *optSol = NULL;
+
+    double remainingTime = timeLimit - broker_->timer().getTime();
+
+    if(remainingTime < etol){
+	std::cout << "Time limit is reached" << std::endl;
+	return;
+    }
+
+    double *colLower = new double[truncNumCols];
+    double *colUpper = new double[truncNumCols];
+    double *objCoef = new double[truncNumCols];
+    char *colType = new char[truncNumCols];
+
+
+    //CoinDisjointCopyN(uLLower, uColNum, colLower);
+    //CoinDisjointCopyN(uLUpper, uColNum, colUpper);
+
+    if(numFixed > 0){
+    for(i = 0; i < uColNumOrig; i++){
+	index = newIndexUL[i];
+	if(index >= 0){
+	    colLower[index] = uLLower[i];
+	    colUpper[index] = uLUpper[i];
+	    objCoef[index] = objCoefOrig[i];
+	    colType[index] = colTypeOrig[i];
+	}
+    }
+    CoinDisjointCopyN(varLB + uColNumOrig, truncLColNum, colLower + uColNum);
+    CoinDisjointCopyN(varUB + uColNumOrig, truncLColNum, colUpper + uColNum);
+
+    CoinDisjointCopyN(objCoefOrig + uColNumOrig, truncLColNum, objCoef + uColNum);
+
+    CoinDisjointCopyN(colTypeOrig + uColNumOrig, truncLColNum, colType + uColNum);
+    }
+    else{
+	memcpy(colLower, varLB, sizeof(double) * truncNumCols);
+	memcpy(colUpper, varUB, sizeof(double) * truncNumCols);
+	memcpy(objCoef, objCoefOrig, sizeof(double) * truncNumCols);
+	memcpy(colType, colTypeOrig, sizeof(char) * truncNumCols);
+    }
+
+    //Create new MibS model to solve bilevel
+    MibSModel *modelResPH = new MibSModel();
+
+    modelResPH->numScenarios_ = getNumScenarios();
+    modelResPH->setTruncLowerDim(truncLColNum);
+    modelResPH->setTruncLowerRowNum(truncLRowNum);
+    modelResPH->lowerObjCoeffs_ = new double[truncLColNum];
+    memcpy(modelResPH->lowerObjCoeffs_, getLowerObjCoeffs(),
+	   sizeof(double) * truncLColNum);
+
+    modelResPH->setLowerObjSense(getLowerObjSense());
+
+    modelResPH->lowerColInd_ = new int[truncLColNum];
+    modelResPH->lowerRowInd_ = new int[truncLRowNum];
+    CoinIotaN(modelResPH->lowerColInd_, truncLColNum, uColNum);
+    CoinIotaN(modelResPH->lowerRowInd_, truncLRowNum, uRowNum);
+    //modelResPH->lowerColInd_ = lowerColInd_;
+    //modelResPH->lowerRowInd_ = lowerRowInd_;
+
+    modelResPH->setLowerDim(lColNum);
+    modelResPH->setLowerRowNum(lRowNum);
+
+    modelResPH->origRowLb_ = new double[numRows];
+    modelResPH->origRowUb_ = new double[numRows];
+    memcpy(modelResPH->origRowLb_, origRowLb_, sizeof(double) * numRows);
+    memcpy(modelResPH->origRowUb_, origRowUb_, sizeof(double) * numRows);
+    //modelResPH->origRowLb_ = origRowLb_;
+    //modelResPH->origRowUb_ = origRowUb_;
+
+    CoinPackedMatrix *stocMatrixA2 = new CoinPackedMatrix(false, 0, 0);
+    if(numFixed > 0){
+        if(isA2Random != PARAM_OFF){
+	    for(i = 0; i < lRowNum; i++){
+		row = stocA2Matrix_->getVector(i);
+	        rowInd = row.getIndices();
+	        rowElem = row.getElements();
+	        rowNumElem = row.getNumElements();
+	        for(j = 0; j < rowNumElem; j++){
+		    index = newIndexUL[rowInd[j]];
+		    if(index >= 0){
+			appendedRow.insert(index, rowElem[j]);
+		    }
+		    else{
+			index = i + uRowNum;
+		        value = rowElem[j] * uLLower[rowInd[j]];
+		        if(rowSense[index] == 'G'){
+			    modelResPH->origRowLb_[index] = origRowLb_[index] - value;
+			}
+		        else{
+			    modelResPH->origRowUb_[index] = origRowUb_[index] - value;
+			}
+		    }
+		}
+	        stocMatrixA2->appendRow(appendedRow);
+	        appendedRow.clear();
+	    }
+	}
+        else{
+	    for(i = 0; i < truncLRowNum; i++){
+		row = stocA2Matrix_->getVector(i);
+	        rowInd = row.getIndices();
+	        rowElem = row.getElements();
+	        rowNumElem = row.getNumElements();
+	        for(j = 0; j < rowNumElem; j++){
+		    index = newIndexUL[rowInd[j]];
+		    if(index >= 0){
+			appendedRow.insert(index, rowElem[j]);
+		    }
+		    else{
+			value = rowElem[j] * uLLower[rowInd[j]];
+		        if(rowSense[i + uRowNum] == 'G'){
+			    for(k = 0; k < numScenarios_; k++){
+				index = i + uRowNum + k * truncLRowNum;
+			        modelResPH->origRowLb_[index] = origRowLb_[index] - value;
+			    }
+			}
+		        else{
+			    for(k = 0; k < numScenarios_; k++){
+				index = i + uRowNum + k * truncLRowNum;
+			        modelResPH->origRowUb_[index] = origRowUb_[index] - value;
+			    }
+			}
+		    }
+		}
+	        stocMatrixA2->appendRow(appendedRow);
+	        appendedRow.clear();
+	    }
+	}
+
+	modelResPH->setStocA2Matrix(stocMatrixA2);
+    }
+    else{
+	modelResPH->setStocA2Matrix(stocA2Matrix_);
+    }
+
+    CoinPackedMatrix *coefMatrix = new CoinPackedMatrix(false, 0, 0);
+    CoinPackedMatrix *coefRowMatrix = new CoinPackedMatrix(false, 0, 0);
+    if(numFixed > 0){
+        coefMatrix->setDimensions(0, truncNumCols);
+        coefRowMatrix->setDimensions(0, truncNumCols);
+
+        for(i = 0; i < uRowNum; i++){
+	    row = rowMatrix.getVector(i);
+	    rowInd = row.getIndices();
+	    rowElem = row.getElements();
+	    rowNumElem = row.getNumElements();
+	    for(j = 0; j < rowNumElem; j++){
+		index = newIndexUL[rowInd[j]];
+	        if(index >= 0){
+		    appendedRow.insert(index, rowElem[j]);
+		}
+	        else{
+		    value = rowElem[j] * uLLower[rowInd[j]];
+		    if(rowSense[i] == 'G'){
+			modelResPH->origRowLb_[i] = origRowLb_[i] - value;
+		    }
+		    else{
+			modelResPH->origRowUb_[i] = origRowUb_[i] - value;
+		    }
+		}
+	    }
+	    coefMatrix->appendRow(appendedRow);
+	    coefRowMatrix->appendRow(appendedRow);
+	    appendedRow.clear();
+	}
+
+
+        for(i = 0; i < truncLRowNum; i++){
+	    appendedRow = stocMatrixA2->getVector(i);
+	    row = rowMatrix.getVector(i + uRowNum);
+	    rowInd = row.getIndices();
+	    rowElem = row.getElements();
+	    rowNumElem = row.getNumElements();
+	    for(j = 0; j < rowNumElem; j++){
+		index = rowInd[j];
+	        if(index >= uColNumOrig){
+		    appendedRow.insert(index - numFixed, rowElem[j]);
+		}
+	    }
+	    coefMatrix->appendRow(appendedRow);
+	    coefRowMatrix->appendRow(appendedRow);
+	    appendedRow.clear();
+	}
+        coefMatrix->reverseOrdering();
+    }
+
+    //stocMatrixA2->setDimensions(0, uColNum);
+    //for(i = 0; i < lRowNum; i++){
+    //stocA2Matrix->(stocA2Matrix_->getVector(i));
+    //}
+
+    modelResPH->scenarioProb_ = getScenarioProb();
+
+    remainingTime = timeLimit - broker_->timer().getTime();
+
+    if(remainingTime < etol){
+	std::cout << "Time limit is reached" << std::endl;
+	return;
+    }
+    remainingTime = CoinMax(remainingTime, 0.0);
+
+    //Set up lp solver
+    OsiClpSolverInterface lpSolver;
+    lpSolver.getModelPtr()->setDualBound(1.0e10);
+    lpSolver.messageHandler()->setLogLevel(0);
+    modelResPH->setSolver(&lpSolver);
+
+    modelResPH->AlpsPar()->setEntry(AlpsParams::timeLimit, remainingTime);
+    //modelResPH->AlpsPar()->setEntry(AlpsParams::nodeLimit, 150);
+    modelResPH->BlisPar()->setEntry(BlisParams::heurStrategy, 0);
+    modelResPH->MibSPar()->setEntry(MibSParams::feasCheckSolver, feasCheckSolver.c_str());
+    //modelResPH->MibSPar()->setEntry(MibSParams::printProblemInfo, false);
+    modelResPH->MibSPar()->setEntry(MibSParams::useBoundCut, false);
+    modelResPH->MibSPar()->setEntry(MibSParams::branchStrategy, MibSBranchingStrategyLinking);
+    modelResPH->MibSPar()->setEntry(MibSParams::bilevelCutTypes, 0);
+    modelResPH->MibSPar()->setEntry(MibSParams::useBendersCut, PARAM_OFF);
+    modelResPH->MibSPar()->setEntry(MibSParams::useNoGoodCut, PARAM_OFF);
+    modelResPH->MibSPar()->setEntry(MibSParams::useGeneralNoGoodCut, PARAM_OFF);
+    modelResPH->MibSPar()->setEntry(MibSParams::useTypeIC, PARAM_OFF);
+    modelResPH->MibSPar()->setEntry(MibSParams::useTypeWatermelon, PARAM_OFF);
+    modelResPH->MibSPar()->setEntry(MibSParams::useTypeHypercubeIC, PARAM_ON);
+    modelResPH->MibSPar()->setEntry(MibSParams::useTypeTenderIC, PARAM_OFF);
+    modelResPH->MibSPar()->setEntry(MibSParams::useTypeHybridIC, PARAM_OFF);
+    modelResPH->MibSPar()->setEntry(MibSParams::useIncObjCut, PARAM_OFF);
+    modelResPH->MibSPar()->setEntry(MibSParams::usePureIntegerCut, PARAM_OFF);
+    modelResPH->MibSPar()->setEntry(MibSParams::useNewPureIntCut, false);
+    modelResPH->MibSPar()->setEntry(MibSParams::solveSecondLevelWhenXYVarsInt, PARAM_ON);
+    modelResPH->MibSPar()->setEntry(MibSParams::solveSecondLevelWhenXVarsInt, PARAM_OFF);
+    modelResPH->MibSPar()->setEntry(MibSParams::solveSecondLevelWhenLVarsInt, PARAM_OFF);
+    modelResPH->MibSPar()->setEntry(MibSParams::solveSecondLevelWhenLVarsFixed, PARAM_ON);
+    modelResPH->MibSPar()->setEntry(MibSParams::computeBestUBWhenXVarsInt, PARAM_OFF);
+    modelResPH->MibSPar()->setEntry(MibSParams::computeBestUBWhenLVarsInt, PARAM_OFF);
+    modelResPH->MibSPar()->setEntry(MibSParams::computeBestUBWhenLVarsFixed, PARAM_ON);
+    modelResPH->MibSPar()->setEntry(MibSParams::useLinkingSolutionPool, PARAM_ON);
+
+    modelResPH->isInterdict_ = false;
+    modelResPH->MibSPar()->setEntry(MibSParams::stochasticityType, "stochasticWithoutSAA");
+    modelResPH->MibSPar()->setEntry(MibSParams::isA2Random, isA2Random);
+    modelResPH->MibSPar()->setEntry(MibSParams::useUBDecompose, useUBDecompose);
+    modelResPH->AlpsPar()->setEntry(AlpsParams::clockType, clockType);
+
+    if(numFixed > 0){
+	modelResPH->loadProblemData(*coefMatrix, *coefRowMatrix, colLower, colUpper, objCoef,
+				    conLB, conUB, colType, objSense, infinity, rowSense);
+    }
+    else{
+	modelResPH->loadProblemData(matrix, rowMatrix, colLower, colUpper, objCoef,
+				    conLB, conUB, colType, objSense, infinity, rowSense);
+    }
+
+    int argc = 1;
+    char** argv = new char* [1];
+    argv[0] = (char *) "mibs";
+
+#ifdef  COIN_HAS_MPI
+    AlpsKnowledgeBrokerMPI brokerResPH(argc, argv, *modelResPH);
+#else
+    AlpsKnowledgeBrokerSerial brokerResPH(argc, argv, *modelResPH);
+#endif
+
+    brokerResPH.search(modelResPH);
+
+    brokerResPH.printBestSolution();
+
+    delete [] colLower;
+    delete [] colUpper;
+    delete [] objCoef;
+    delete [] colType;
+    if(coefMatrix){
+	delete coefMatrix;
+    }
+    if(coefRowMatrix){
+	delete coefRowMatrix;
+    }
+    
+    delete modelResPH;
+}
+
+
+//#############################################################################
+/*void
+MibSModel::solveRestrictedPH(const CoinPackedMatrix& matrix,
+     const CoinPackedMatrix& rowMatrix,
+     const double* varLB, const double* varUB,
+     const double* objCoef, const double* conLB,
+     const double* conUB, const char * colType,
+     double objSense, int truncNumCols, int truncNumRows,
+     double infinity, const char *rowSense,
+     double *uLUpper, double *uLLower, int numFixed, int *isFixedUL)
+{
+  int isA2Random(MibSPar_->entry(MibSParams::isA2Random));
+  
+  std::string feasCheckSolver
+    = MibSPar_->entry(MibSParams::feasCheckSolver);
+  double timeLimit(AlpsPar()->entry(AlpsParams::timeLimit));
+  int clockType(AlpsPar()->entry(AlpsParams::clockType));
+  bool useUBDecompose(MibSPar_->entry(MibSParams::useUBDecompose));
+  double etol(etol_);
+  int truncLColNum(getTruncLowerDim());
+  int truncLRowNum(getTruncLowerRowNum());
+  int uColNum(truncNumCols - truncLColNum);
+  int uRowNum(truncNumRows - truncLRowNum);
+  int lColNum(truncLColNum * numScenarios_);
+  int lRowNum(truncLRowNum * numScenarios_);
+  int numCols(uColNum + lColNum);
+  int numRows(uRowNum + lRowNum);
+  double remainingTime = timeLimit - broker_->subTreeTimer().getTime();
+  if(remainingTime < etol){
+  std::cout << "Time limit is reached" << std::endl; 
+    return;
+  }
+  double *colLower = new double[truncNumCols];
+  double *colUpper = new double[truncNumCols];
+  CoinDisjointCopyN(uLLower, uColNum, colLower);
+  CoinDisjointCopyN(uLUpper, uColNum, colUpper);
+  CoinDisjointCopyN(varLB + uColNum, truncLColNum, colLower + uColNum);
+  CoinDisjointCopyN(varUB + uColNum, truncLColNum, colUpper + uColNum);
+  
+  // Create new MibS model to solve bilevel 
+  MibSModel *modelResPH = new MibSModel();
+  modelResPH->numScenarios_ = getNumScenarios();
+  modelResPH->setTruncLowerDim(truncLColNum);
+  modelResPH->setTruncLowerRowNum(truncLRowNum);
+  modelResPH->lowerObjCoeffs_ = new double[truncLColNum];
+  memcpy(modelResPH->lowerObjCoeffs_, getLowerObjCoeffs(),
+ sizeof(double) * truncLColNum);
+  
+  modelResPH->setLowerObjSense(getLowerObjSense());
+  //modelResPH->lowerColInd_ = new int[truncLColNum];
+  //modelResPH->lowerRowInd_ = new int[truncLRowNum];
+  //CoinIotaN(modelResPH->lowerColInd_, truncLColNum, uColNum);
+  //CoinIotaN(modelResPH->lowerRowInd_, truncLRowNum, uRowNum);
+  modelResPH->lowerColInd_ = lowerColInd_;
+  modelResPH->lowerRowInd_ = lowerRowInd_;
+  
+  modelResPH->setLowerDim(lColNum);
+  modelResPH->setLowerRowNum(lRowNum);
+  //modelResPH->origRowLb_ = new double[numRows];
+  //modelResPH->origRowUb_ = new double[numRows];
+  //memcpy(modelResPH->origRowLb_, origRowLb_, sizeof(double) * numRows);
+  //memcpy(modelResPH->origRowUb_, origRowUb_, sizeof(double) * numRows);
+  modelResPH->origRowLb_ = origRowLb_;
+  modelResPH->origRowUb_ = origRowUb_; 
+  //CoinPackedMatrix *stocMatrixA2 = new CoinPackedMatrix(false, 0, 0);
+  //stocMatrixA2->setDimensions(0, uColNum);
+  //for(i = 0; i < lRowNum; i++){
+  //stocA2Matrix->(stocA2Matrix_->getVector(i));
+  //}
+  modelResPH->setStocA2Matrix(getStocA2Matrix());
+  modelResPH->scenarioProb_ = getScenarioProb();
+  remainingTime = timeLimit - broker_->subTreeTimer().getTime();
+  if(remainingTime < etol){
+  std::cout << "Time limit is reached" << std::endl;
+    return;
+  }
+  remainingTime = CoinMax(remainingTime, 0.0);
+  
+  // Set up lp solver 
+  OsiClpSolverInterface lpSolver;
+  lpSolver.getModelPtr()->setDualBound(1.0e10);
+  lpSolver.messageHandler()->setLogLevel(0);
+  modelResPH->setSolver(&lpSolver);
+  modelResPH->AlpsPar()->setEntry(AlpsParams::timeLimit, remainingTime);
+  modelResPH->BlisPar()->setEntry(BlisParams::heurStrategy, 0);
+  modelResPH->MibSPar()->setEntry(MibSParams::feasCheckSolver, feasCheckSolver.c_str());
+  modelResPH->MibSPar()->setEntry(MibSParams::printProblemInfo, false);
+  modelResPH->MibSPar()->setEntry(MibSParams::useBoundCut, false);
+  modelResPH->MibSPar()->setEntry(MibSParams::branchStrategy, MibSBranchingStrategyLinking);
+  modelResPH->MibSPar()->setEntry(MibSParams::bilevelCutTypes, 0);
+  modelResPH->MibSPar()->setEntry(MibSParams::useBendersCut, PARAM_OFF);
+  modelResPH->MibSPar()->setEntry(MibSParams::useNoGoodCut, PARAM_OFF);
+  modelResPH->MibSPar()->setEntry(MibSParams::useGeneralNoGoodCut, PARAM_OFF);
+  modelResPH->MibSPar()->setEntry(MibSParams::useTypeIC, PARAM_OFF);
+  modelResPH->MibSPar()->setEntry(MibSParams::useTypeWatermelon, PARAM_OFF);
+  modelResPH->MibSPar()->setEntry(MibSParams::useTypeHypercubeIC, PARAM_ON);
+  modelResPH->MibSPar()->setEntry(MibSParams::useTypeTenderIC, PARAM_OFF);
+  modelResPH->MibSPar()->setEntry(MibSParams::useTypeHybridIC, PARAM_OFF);
+  modelResPH->MibSPar()->setEntry(MibSParams::useIncObjCut, PARAM_OFF);
+  modelResPH->MibSPar()->setEntry(MibSParams::usePureIntegerCut, PARAM_OFF);
+  modelResPH->MibSPar()->setEntry(MibSParams::useNewPureIntCut, false);
+  modelResPH->MibSPar()->setEntry(MibSParams::solveSecondLevelWhenXYVarsInt, PARAM_ON);
+  modelResPH->MibSPar()->setEntry(MibSParams::solveSecondLevelWhenXVarsInt, PARAM_OFF);
+  modelResPH->MibSPar()->setEntry(MibSParams::solveSecondLevelWhenLVarsInt, PARAM_OFF);
+  modelResPH->MibSPar()->setEntry(MibSParams::solveSecondLevelWhenLVarsFixed, PARAM_ON);
+  modelResPH->MibSPar()->setEntry(MibSParams::computeBestUBWhenXVarsInt, PARAM_OFF);
+  modelResPH->MibSPar()->setEntry(MibSParams::computeBestUBWhenLVarsInt, PARAM_OFF);
+  modelResPH->MibSPar()->setEntry(MibSParams::computeBestUBWhenLVarsFixed, PARAM_ON);
+  modelResPH->MibSPar()->setEntry(MibSParams::useLinkingSolutionPool, PARAM_ON);
+  modelResPH->isInterdict_ = false;
+  modelResPH->MibSPar()->setEntry(MibSParams::stochasticityType, "stochasticWithoutSAA");
+  modelResPH->MibSPar()->setEntry(MibSParams::isA2Random, isA2Random);
+  modelResPH->MibSPar()->setEntry(MibSParams::useUBDecompose, useUBDecompose);
+  modelResPH->AlpsPar()->setEntry(AlpsParams::clockType, clockType);
+  modelResPH->loadProblemData(matrix, rowMatrix, colLower, colUpper, objCoef,
+      conLB, conUB, colType, objSense, infinity, rowSense);
+  int argc = 1;
+  char** argv = new char* [1];
+  argv[0] = (char *) "mibs";
+#ifdef  COIN_HAS_MPI
+  AlpsKnowledgeBrokerMPI brokerResPH(argc, argv, *modelResPH);
+#else
+  AlpsKnowledgeBrokerSerial brokerResPH(argc, argv, *modelResPH);
+#endif
+  brokerResPH.search(modelResPH);
+  brokerResPH.printBestSolution();
+  delete modelResPH;
+  }*/
+
+//#############################################################################
+void
+MibSModel::printSolutionPH(double *optSol, double optObj, int numIter,
+			   int uColNum)
+{
+
+    int i(0);
+    double nearInt(0.0);
+    std::cout <<  "============================================" << std::endl;
+    std::cout << "Number of PH heuristic iteration: " << numIter << std::endl;
+    std::cout << "Best solution: " << std::endl;
+    std::cout << "Cost = " << optObj << std::endl;
+    for(i = 0; i < uColNum; i++){
+	if(optSol[i] > 1.0e-15 || optSol[i] < -1.0e-15){
+	    nearInt = floor(optSol[i] + 0.5);
+	    if(ALPS_FABS(nearInt - optSol[i]) < 1.0e-6){
+		std::cout << "x[" << i << "] = " << nearInt << std::endl;
+	    }
+	    else{
+		std::cout << "x[" << i << "] = " << optSol[i] << std::endl;
+	    }
+	}
+    }
+
+}
+
+//#############################################################################
+double *
+MibSModel::solvePHProb(const CoinPackedMatrix& rowMatrix, const double *varLB,
+		       const double *varUB, double *origObjCoef,
+		       const double *conLB, const double *conUB, const char *colType,
+		       double objSense, int numCols, int numRows, double infinity,
+		       const char *rowSense, int scenarioIndex, int iterIndex,
+		       bool &isTimeLimReached, double *wArr, double *implemSol, double *rho,
+		       CoinPackedMatrix *filledCoefMatrix)
+{
+
+    int nodeLimit(MibSPar_->entry(MibSParams::nodeLimitPHSubprob));
+
+    double gapLimit(MibSPar_->entry(MibSParams::optimalRelGapLimitPHSubprob));
+
+    int isA2Random(MibSPar_->entry(MibSParams::isA2Random));
+
+    double timeLimit(AlpsPar()->entry(AlpsParams::timeLimit));
+
+    std::string feasCheckSolver =
+	MibSPar_->entry(MibSParams::feasCheckSolver);
+
+    int clockType(AlpsPar()->entry(AlpsParams::clockType));
+
+    int i(0), j(0);
+    int index(0), rowNumElem(0);
+    double remainingTime(0.0);
+    double etol(etol_);
+    int lColNum(getTruncLowerDim());
+    int lRowNum(getTruncLowerRowNum());
+    int uColNum(numCols - lColNum);
+    int uRowNum(numRows - lRowNum);
+    CoinPackedMatrix *stocA2Matrix(getStocA2Matrix());
+    CoinPackedVector row;
+    CoinPackedVector appendedRow;
+    int *rowInd = NULL;
+    double *rowElem = NULL;
+    double *optSol = NULL;
+
+    double *objCoef = new double[numCols];
+    CoinZeroN(objCoef, numCols);
+
+    double *rowLower = new double[numRows];
+    double *rowUpper = new double[numRows];
+    memcpy(rowLower, conLB, sizeof(double) * numRows);
+    memcpy(rowUpper, conUB, sizeof(double) * numRows);
+
+    int *uColInd = new int[uColNum];
+    int *uRowInd = new int[uRowNum];
+    int *structRowInd = new int[numRows];
+    CoinIotaN(uColInd, uColNum, 0);
+    CoinIotaN(uRowInd, uRowNum, 0);
+    CoinIotaN(structRowInd, numRows, 0);
+
+    CoinPackedMatrix *coefMatrix = 0;
+    CoinPackedMatrix *coefRowMatrix = 0;
+    CoinPackedMatrix copyCoefMatrix;
+    CoinPackedMatrix copyCoefRowMatrix;
+
+    if(isA2Random != PARAM_OFF){
+	coefMatrix = new CoinPackedMatrix(false, 0, 0);
+        coefMatrix->setDimensions(0, numCols);
+        coefRowMatrix = new CoinPackedMatrix(false, 0, 0);
+        coefRowMatrix->setDimensions(0, numCols);
+
+        for(i = 0; i < uRowNum; i++){
+	    coefMatrix->appendRow(rowMatrix.getVector(i));
+	    coefRowMatrix->appendRow(rowMatrix.getVector(i));
+	}
+
+        for(i = 0; i < lRowNum; i++){
+	    if(isA2Random != PARAM_OFF){
+		appendedRow = stocA2Matrix->getVector(scenarioIndex * lRowNum + i);
+	    }
+	    row = rowMatrix.getVector(i + uRowNum);
+	    rowInd = row.getIndices();
+	    rowElem = row.getElements();
+	    rowNumElem = row.getNumElements();
+	    for(j = 0; j < rowNumElem; j++){
+		index = rowInd[j];
+		if(index >= uColNum){
+		    appendedRow.insert(index, rowElem[j]);
+		}
+	    }
+	    coefMatrix->appendRow(appendedRow);
+	    coefRowMatrix->appendRow(appendedRow);
+	    appendedRow.clear();
+	}
+        coefMatrix->reverseOrdering();
+    }
+    else{
+	copyCoefMatrix.reverseOrderedCopyOf(*filledCoefMatrix);
+	copyCoefRowMatrix.copyOf(*filledCoefMatrix);
+    }
+
+    //There is no penalty in the first iteration
+    double rhoVal(0.0);
+    memcpy(objCoef, origObjCoef, sizeof(double) * numCols);
+    if(iterIndex > 0){
+	for(i = 0; i < uColNum; i++){
+	    //saharPH: check rho/2.0
+	    rhoVal = rho[i];
+	    objCoef[i] += wArr[i] - rhoVal * implemSol[i] + (rhoVal/2.0);
+	}
+    }
+
+    //setting row bounds
+    for(i = uRowNum; i < numRows; i++){
+	index = scenarioIndex * lRowNum + i;
+	if(rowSense[i] == 'L'){
+	    rowLower[i] = -1 * infinity;
+	    rowUpper[i] = origRowUb_[index];
+	}
+	else{
+	    rowLower[i] = origRowLb_[index];
+	    rowUpper[i] = infinity;
+	}
+    }
+
+    /** Set up lp solver **/
+    OsiClpSolverInterface lpSolver;
+    lpSolver.getModelPtr()->setDualBound(1.0e10);
+    lpSolver.messageHandler()->setLogLevel(0);
+
+    //Create new MibS model to solve bilevel
+    MibSModel *pHModel = new MibSModel();
+
+    remainingTime = timeLimit - broker_->timer().getTime();
+    if(remainingTime <= etol){
+	isTimeLimReached = true;
+	//saharPH: free the memory
+	return NULL;
+    }
+    remainingTime = CoinMax(remainingTime, 0.00);
+    pHModel->setSolver(&lpSolver);
+    pHModel->AlpsPar()->setEntry(AlpsParams::msgLevel, -1);
+    pHModel->BlisPar()->setEntry(BlisParams::optimalRelGap, gapLimit);
+    pHModel->AlpsPar()->setEntry(AlpsParams::timeLimit, remainingTime);
+    //pHModel->AlpsPar()->setEntry(AlpsParams::timeLimit, 5);
+    pHModel->AlpsPar()->setEntry(AlpsParams::nodeLimit, nodeLimit);
+    pHModel->BlisPar()->setEntry(BlisParams::heurStrategy, 0);
+    pHModel->MibSPar()->setEntry(MibSParams::feasCheckSolver, feasCheckSolver.c_str());
+    pHModel->MibSPar()->setEntry(MibSParams::printProblemInfo, false);
+    pHModel->MibSPar()->setEntry(MibSParams::useBoundCut, false);
+    //saharPH: it is dependent on the problem
+    //pHModel->MibSPar()->setEntry(MibSParams::branchStrategy, MibSBranchingStrategyLinking);
+    pHModel->MibSPar()->setEntry(MibSParams::bilevelCutTypes, 0);
+    pHModel->MibSPar()->setEntry(MibSParams::useBendersCut, PARAM_OFF);
+    pHModel->MibSPar()->setEntry(MibSParams::useNoGoodCut, PARAM_OFF);
+    pHModel->MibSPar()->setEntry(MibSParams::useGeneralNoGoodCut, PARAM_OFF);
+    pHModel->MibSPar()->setEntry(MibSParams::useTypeIC, PARAM_OFF);
+    pHModel->MibSPar()->setEntry(MibSParams::useTypeWatermelon, PARAM_OFF);
+    pHModel->MibSPar()->setEntry(MibSParams::useTypeHypercubeIC, PARAM_ON);
+    pHModel->MibSPar()->setEntry(MibSParams::useTypeTenderIC, PARAM_OFF);
+    pHModel->MibSPar()->setEntry(MibSParams::useTypeHybridIC, PARAM_OFF);
+    pHModel->MibSPar()->setEntry(MibSParams::useIncObjCut, PARAM_OFF);
+    pHModel->MibSPar()->setEntry(MibSParams::usePureIntegerCut, PARAM_OFF);
+    pHModel->MibSPar()->setEntry(MibSParams::useNewPureIntCut, false);
+    pHModel->MibSPar()->setEntry(MibSParams::solveSecondLevelWhenXYVarsInt, PARAM_ON);
+    pHModel->MibSPar()->setEntry(MibSParams::solveSecondLevelWhenXVarsInt, PARAM_OFF);
+    pHModel->MibSPar()->setEntry(MibSParams::solveSecondLevelWhenLVarsInt, PARAM_OFF);
+    pHModel->MibSPar()->setEntry(MibSParams::solveSecondLevelWhenLVarsFixed, PARAM_ON);
+    pHModel->MibSPar()->setEntry(MibSParams::computeBestUBWhenXVarsInt, PARAM_OFF);
+    pHModel->MibSPar()->setEntry(MibSParams::computeBestUBWhenLVarsInt, PARAM_OFF);
+    pHModel->MibSPar()->setEntry(MibSParams::computeBestUBWhenLVarsFixed, PARAM_ON);
+    pHModel->MibSPar()->setEntry(MibSParams::useLinkingSolutionPool, PARAM_ON);
+    pHModel->isInterdict_ = false;
+    pHModel->MibSPar()->setEntry(MibSParams::stochasticityType, "deterministic");
+    pHModel->AlpsPar()->setEntry(AlpsParams::clockType, clockType);
+
+    pHModel->loadAuxiliaryData(lColNum, lRowNum, getLowerColInd(), getLowerRowInd(),
+			       getLowerObjSense(), getLowerObjCoeffs(), uColNum,
+			       uRowNum, uColInd, uRowInd, numRows, structRowInd, 0,
+			       NULL, NULL, NULL);
+
+    if(isA2Random != PARAM_OFF){
+	pHModel->loadProblemData(*coefMatrix, *coefRowMatrix, varLB, varUB, objCoef,
+			         rowLower, rowUpper, colType, 1, infinity,
+			         rowSense);
+    }
+    else{
+	pHModel->loadProblemData(copyCoefMatrix, copyCoefRowMatrix, varLB, varUB, objCoef,
+				 rowLower, rowUpper, colType, 1, infinity,
+				 rowSense);
+    }
+
+    int argc = 1;
+    char** argv = new char* [1];
+    argv[0] = (char *) "mibs";
+
+#ifdef  COIN_HAS_MPI
+    AlpsKnowledgeBrokerMPI brokerPH(argc, argv, *pHModel);
+#else
+    AlpsKnowledgeBrokerSerial brokerPH(argc, argv, *pHModel);
+#endif
+
+    brokerPH.search(pHModel);
+    brokerPH.printBestSolution();
+
+    MibSSolution *mibsSol = NULL;
+
+    /*
+  if(brokerPH.getSolStatus() == AlpsExitStatusOptimal){
+    AlpsSolution *sol = dynamic_cast<AlpsSolution* >
+      (brokerPH.getBestKnowledge(AlpsKnowledgeTypeSolution).first);
+    mibsSol = dynamic_cast<MibSSolution* >(sol);
+  }
+  
+  if(mibsSol != NULL){
+    optSol = new double[uColNum];
+    //we know that all UL variables are binary
+    for(i = 0; i < uColNum; i++){
+      optSol[i] = floor(mibsSol->getValues()[i] + 0.5);
+    }
+  }
+  else if(brokerPH.getSolStatus() == AlpsExitStatusTimeLimit){
+    isTimeLimReached = true;
+  }
+  else if(brokerPH.getNumKnowledges(AlpsKnowledgeTypeSolution) <= 0){
+    throw CoinError("Problem PH is infeasible",
+    "solvePHProb", "MibSModel");
+  }
+    */
+    if(timeLimit - broker_->timer().getTime() <= 0){
+	isTimeLimReached = true;
+    }
+
+    if(brokerPH.getNumKnowledges(AlpsKnowledgeTypeSolution) > 0){
+	    AlpsSolution *sol = dynamic_cast<AlpsSolution* >
+		(brokerPH.getBestKnowledge(AlpsKnowledgeTypeSolution).first);
+	    mibsSol = dynamic_cast<MibSSolution* >(sol);
+    }
+
+    if(mibsSol != NULL){
+	optSol = new double[uColNum];
+	//we know that all UL variables are binary
+	for(i = 0; i < uColNum; i++){
+	    optSol[i] = floor(mibsSol->getValues()[i] + 0.5);
+	}
+    }
+
+
+
+
+    delete [] objCoef;
+    delete [] rowLower;
+    delete [] rowUpper;
+    delete [] uColInd;
+    delete [] uRowInd;
+    delete [] structRowInd;
+    delete coefMatrix;
+    delete coefRowMatrix;
+    delete pHModel;
+
+    return optSol;
+}
+
+
+//#############################################################################
+// this function is used when user selects saa approach
+void
+MibSModel::setupSAA(const CoinPackedMatrix& matrix,
+		    const CoinPackedMatrix& rowMatrix,
+		    const double* varLB, const double* varUB,
+		    const double* objCoef, const double* conLB,
+		    const double* conUB, const char * colType,
+		    double objSense, int truncNumCols, int truncNumRows,
+		    double infinity, const char *rowSense)
+{
+
+    //saharSto2: we have one assumption: All SAA problems are feasible
+    //saharStoSAA: ask about generating samples
+    //saharStoSAA: lcm
+    //saharStoSAA: ask about defining symphony then check all COIN_HAS_SYMPHONY
+
+    const int clockType = AlpsPar()->entry(AlpsParams::clockType);
+    broker_->timer().setClockType(clockType);
+    broker_->subTreeTimer().setClockType(clockType);
+    broker_->tempTimer().setClockType(clockType);
+    broker_->timer().start();
+    
+    std::string feasCheckSolver =
+	MibSPar_->entry(MibSParams::feasCheckSolver);
+
+    int whichCutsLL =
+	MibSPar_->entry(MibSParams::whichCutsLL);
+
+    int maxThreadsLL =
+	MibSPar_->entry(MibSParams::maxThreadsLL);
+    
+    double timeLimit(AlpsPar()->entry(AlpsParams::timeLimit));
+
+    int isSMPSFormat(MibSPar_->entry(MibSParams::isSMPSFormat));
+
+    int isA2Random(MibSPar_->entry(MibSParams::isA2Random));
+    
+    int replNum(MibSPar_->entry(MibSParams::replNumSAA));//M
+    int evalSampleSize(MibSPar_->entry(MibSParams::evalSampSizeSAA));//N'
+    int i(0), j(0), m(0);
+    int index(0), rowNumElem(0), allScenariosNumSMPS(0);
+    double element(0.0);
+    double etol(etol_);
+    double remainingTime(0.0) ,objU(0.0), objL(0.0);
+    double objSAA(0.0);//z_N^i
+    double objEval(0.0);//\hat{z}_N'(\hat{x}^i)
+    double objBestEvalSol(infinity);//\hat{z}_N'(\hat{x}^*)
+    double optGap(0.0);//optimality gap estimator
+    double estimatedLowerBound(0.0), varLower(0.0), varUpper(0.0);
+    bool isLowerInfeasible(false), isTimeLimReached(false);
+    bool allEvalsInfeas(true);
+    CoinPackedVector appendedRow;
+    CoinPackedVector row;
+    int *rowInd = NULL;
+    double *rowElem = NULL;
+    double *b2Base = NULL;
+    //double **fullMatrixA2 = NULL;
+    std::vector<std::vector<double> > fullMatrixA2;
+    CoinPackedMatrix *matrixA2Base = NULL;
+    int truncLColNum(getTruncLowerDim());
+    int truncLRowNum(getTruncLowerRowNum());
+    int uCols(truncNumCols - truncLColNum);
+    int uRows(truncNumRows - truncLRowNum);
+
+    //count the number of all scenarios in smps format
+    if(isSMPSFormat == PARAM_ON){
+	allScenariosNumSMPS = countScenariosSMPS();
+	if(isA2Random != PARAM_OFF){
+	    /*fullMatrixA2 = new double*[truncLRowNum];
+	    for(i = 0; i < truncLRowNum; i++){
+		//saharSto3: check if they are filled with zeros
+		fullMatrixA2[i] = new double[uCols]();
+		}*/
+	    fullMatrixA2.resize(truncLRowNum, std::vector<double>(uCols, 0.0));
+	}
+	else{
+	    matrixA2Base = new CoinPackedMatrix(false, 0, 0);
+	    matrixA2Base->setDimensions(0, uCols);
+	}
+	for(i = uRows; i < truncNumRows; i++){
+	    row = rowMatrix.getVector(i);
+	    rowInd = row.getIndices();
+	    rowElem = row.getElements();
+	    rowNumElem = row.getNumElements();
+	    for(j = 0; j < rowNumElem; j++){
+		index = rowInd[j];
+		element = rowElem[j];
+		if(index < uCols){
+		    appendedRow.insert(index, element);
+		    if(isA2Random != PARAM_OFF){
+			fullMatrixA2[i - uRows][index] = element;
+		    }
+		}
+	    }
+	    if(isA2Random == PARAM_OFF){
+		matrixA2Base->appendRow(appendedRow);
+	    }
+	    appendedRow.clear();
+	}
+
+	b2Base = new double[truncLRowNum];
+	for(i = 0; i < truncLRowNum; i++){
+	    index = i + uRows;
+	    if(rowSense[index] == 'L'){
+		b2Base[i] = conUB[index];
+	    }
+	    else{
+		b2Base[i] = conLB[index];
+	    }
+	}
+    }
+    
+    //generating N' samples for evaluation
+    int evalLRowNum(truncLRowNum * evalSampleSize);
+    double *evalRHS = new double[evalLRowNum];
+    CoinZeroN(evalRHS, evalLRowNum);
+    CoinPackedMatrix *evalA2Matrix = NULL;
+    evalA2Matrix = generateSamples(evalSampleSize, truncNumCols,
+				   truncNumRows, allScenariosNumSMPS, rowSense,
+				   b2Base, matrixA2Base, fullMatrixA2, evalRHS);
+    
+    //evaluated upper-level solutions
+    std::map<std::vector<double>, double> seenULSolutions;
+    OsiSolverInterface * evalLSolver = 0;
+    OsiSolverInterface * evalBestSolver = 0;
+    //store G2 matrix to avoid extracting it for evaluatuion
+    int lcmDenum;
+    if(isSMPSFormat == PARAM_ON){
+	lcmDenum = 1;
+    }
+    else{
+	int incB2Denum(MibSPar_->entry(MibSParams::incDistB2DenumSAA));
+	int incA2Denum(MibSPar_->entry(MibSParams::incDistA2DenumSAA));
+	int gcdDenum = greatestCommonDivisor(CoinMin(incB2Denum, incA2Denum), CoinMax(incB2Denum, incA2Denum));
+	lcmDenum = (incB2Denum * incA2Denum)/gcdDenum;
+    }
+    
+    CoinPackedMatrix *matrixG2 = new CoinPackedMatrix(false, 0, 0);
+    matrixG2->setDimensions(0, truncLColNum);
+    for(i = uRows; i < truncNumRows; i++){
+	row = rowMatrix.getVector(i);
+	rowInd = row.getIndices();
+	rowElem = row.getElements();
+	rowNumElem = row.getNumElements();
+	for(j = 0; j < rowNumElem; j++){
+	    index = rowInd[j];
+	    if(index >= uCols){
+		appendedRow.insert(index - uCols, rowElem[j] * lcmDenum);
+	    }
+	}
+	matrixG2->appendRow(appendedRow);
+	appendedRow.clear();
+    }
+
+    double *optSolRepl  = NULL;
+    std::vector<double> optSolReplVec(uCols);
+    double *bestEvalSol = new double[uCols];//\hat{x*}
+    CoinZeroN(bestEvalSol, uCols);
+    //stores z_N^i for i = 1, ..., m 
+    double *objValSAARepls = new double[replNum];
+    CoinZeroN(objValSAARepls, replNum);
+    double *tmpArr = new double[evalSampleSize + 1];
+    CoinZeroN(tmpArr, evalSampleSize + 1);
+    //stores Q(\hat{x}, \xi(\omega^n)) for n = 1, ..., N' and c\hat{x*}
+    for(m = 0; m < replNum; m++){
+	//std::cout << "Replication: " << m + 1 << std::endl;
+	optSolRepl = solveSAA(matrix, rowMatrix, varLB, varUB, objCoef, conLB,
+			      conUB, colType, lcmDenum, objSense, truncNumCols, truncNumRows,
+			      infinity, rowSense, isTimeLimReached, objSAA,
+			      allScenariosNumSMPS, b2Base, matrixA2Base, fullMatrixA2);
+
+	if(isTimeLimReached == true){
+	    goto TERM_SETUPSAA;
+	}
+
+	std::cout << "Optimal solution of replication " << m + 1 << " = " << objSAA << std::endl; 
+
+	if(optSolRepl != NULL){
+	    objValSAARepls[m] = objSAA;
+	    std::copy(optSolRepl, optSolRepl + uCols, optSolReplVec.begin());
+	    if(m == 1){
+		memcpy(bestEvalSol, optSolRepl, sizeof(double) * uCols);
+	    }
+	    if(seenULSolutions.find(optSolReplVec) ==
+	       seenULSolutions.end()){
+		objU = 0.0;
+		objEval = 0.0;
+		for(i = 0; i < evalSampleSize; i++){
+		    objL = 0.0;
+		    isLowerInfeasible = false;
+		    evalLSolver = setUpEvalModels(matrixG2, optSolRepl, evalRHS,
+						  evalA2Matrix, varLB, varUB, objCoef, rowSense,
+						  colType, infinity, i, uCols, uRows);
+
+		    remainingTime = timeLimit - broker_->timer().getTime();
+		    remainingTime = CoinMax(remainingTime, 0.00);
+		    if(remainingTime <= etol){
+			isTimeLimReached = true;
+			goto TERM_SETUPSAA;
+		    }
+
+		    if (feasCheckSolver == "Cbc"){
+			dynamic_cast<OsiCbcSolverInterface *>
+			    (evalLSolver)->getModelPtr()->messageHandler()->setLogLevel(0);
+		    }else if (feasCheckSolver == "SYMPHONY"){
+#if COIN_HAS_SYMPHONY
+			sym_environment *env = dynamic_cast<OsiSymSolverInterface*>
+			    (evalLSolver)->getSymphonyEnvironment();
+
+			sym_set_dbl_param(env, "time_limit", remainingTime);
+			sym_set_int_param(env, "do_primal_heuristic", FALSE);
+			sym_set_int_param(env, "verbosity", -2);
+			sym_set_int_param(env, "prep_level", -1);
+			sym_set_int_param(env, "max_active_nodes", maxThreadsLL);
+			sym_set_int_param(env, "tighten_root_bounds", FALSE);
+			sym_set_int_param(env, "max_sp_size", 100);
+			sym_set_int_param(env, "do_reduced_cost_fixing", FALSE);
+			if (whichCutsLL == 0){
+			    sym_set_int_param(env, "generate_cgl_cuts", FALSE);
+			}else{
+			    sym_set_int_param(env, "generate_cgl_gomory_cuts", GENERATE_DEFAULT);
+			}
+#endif
+		    }else if (feasCheckSolver == "CPLEX"){
+#ifdef COIN_HAS_CPLEX
+			evalLSolver->setHintParam(OsiDoReducePrint);
+			evalLSolver->messageHandler()->setLogLevel(0);
+			CPXENVptr cpxEnv =
+			    dynamic_cast<OsiCpxSolverInterface*>(evalLSolver)->getEnvironmentPtr();
+			assert(cpxEnv);
+			CPXsetintparam(cpxEnv, CPX_PARAM_SCRIND, CPX_OFF);
+			CPXsetintparam(cpxEnv, CPX_PARAM_THREADS, maxThreadsLL);
+#endif
+		    }
+
+		    evalLSolver->branchAndBound();
+
+
+		    if(feasCheckSolver == "SYMPHONY"){
+#if COIN_HAS_SYMPHONY
+			if(sym_is_time_limit_reached(dynamic_cast<OsiSymSolverInterface*>
+						     (evalLSolver)->getSymphonyEnvironment())){
+			    isTimeLimReached = true;
+			    goto TERM_SETUPSAA;
+			}
+#endif
+		    }
+		       
+		    if(!evalLSolver->isProvenOptimal()){
+			isLowerInfeasible = true;
+			break;
+		    }
+		    else{
+			evalBestSolver = setUpEvalModels(matrixG2, optSolRepl, evalRHS,
+							 evalA2Matrix, varLB, varUB, objCoef,
+							 rowSense, colType, infinity, i, uCols, uRows,
+							 evalLSolver->getObjValue(), false);
+
+			remainingTime = timeLimit - broker_->timer().getTime();
+			remainingTime = CoinMax(remainingTime, 0.00);
+			if(remainingTime <= etol){
+			    isTimeLimReached = true;
+			    goto TERM_SETUPSAA;
+			}
+
+			if (feasCheckSolver == "Cbc"){
+			    dynamic_cast<OsiCbcSolverInterface *>
+				(evalBestSolver)->getModelPtr()->messageHandler()->setLogLevel(0);
+			}else if (feasCheckSolver == "SYMPHONY"){
+#if COIN_HAS_SYMPHONY
+			    sym_environment *env = dynamic_cast<OsiSymSolverInterface*>
+				(evalBestSolver)->getSymphonyEnvironment();
+
+			    sym_set_dbl_param(env, "time_limit", remainingTime);
+			    sym_set_int_param(env, "do_primal_heuristic", FALSE);
+			    sym_set_int_param(env, "verbosity", -2);
+			    sym_set_int_param(env, "prep_level", -1);
+			    sym_set_int_param(env, "max_active_nodes", maxThreadsLL);
+			    sym_set_int_param(env, "tighten_root_bounds", FALSE);
+			    sym_set_int_param(env, "max_sp_size", 100);
+			    sym_set_int_param(env, "do_reduced_cost_fixing", FALSE);
+			    if (whichCutsLL == 0){
+				sym_set_int_param(env, "generate_cgl_cuts", FALSE);
+			    }else{
+				sym_set_int_param(env, "generate_cgl_gomory_cuts", GENERATE_DEFAULT);
+			    }
+#endif
+			}else if (feasCheckSolver == "CPLEX"){
+#ifdef COIN_HAS_CPLEX
+			    evalBestSolver->setHintParam(OsiDoReducePrint);
+			    evalBestSolver->messageHandler()->setLogLevel(0);
+			    CPXENVptr cpxEnv =
+				dynamic_cast<OsiCpxSolverInterface*>(evalBestSolver)->getEnvironmentPtr();
+			    assert(cpxEnv);
+			    CPXsetintparam(cpxEnv, CPX_PARAM_SCRIND, CPX_OFF);
+			    CPXsetintparam(cpxEnv, CPX_PARAM_THREADS, maxThreadsLL);
+#endif
+			}
+
+			evalBestSolver->branchAndBound();
+
+			if(feasCheckSolver == "SYMPHONY"){
+#if COIN_HAS_SYMPHONY
+			    if(sym_is_time_limit_reached(dynamic_cast<OsiSymSolverInterface*>
+							 (evalBestSolver)->getSymphonyEnvironment())){
+				isTimeLimReached = true;
+				goto TERM_SETUPSAA;
+			    }
+#endif
+			}
+			
+			if(!evalBestSolver->isProvenOptimal()){
+			    throw CoinError("evalBestSolver cannot be infeasible",
+					    "setupSAA",
+					    "MibSModel");
+			}
+			else{
+			    objL = evalBestSolver->getObjValue();
+			}
+			//const double * values = evalLSolver->getColSolution();
+	                //for(j = 0; j < truncLColNum; j++){
+			//  objL += objCoef[j + uCols] * values[j];
+			//}
+			tmpArr[i] = objL/evalSampleSize;
+		    }
+		}
+		if(isLowerInfeasible == true){
+		    seenULSolutions[optSolReplVec] = infinity;
+		}
+		else{
+		    for(j = 0; j < uCols; j++){
+			objU += objCoef[j] * optSolRepl[j];
+		    }
+		    tmpArr[evalSampleSize] = objU;
+		    allEvalsInfeas = false;
+		    for(j = 0; j < evalSampleSize + 1; j++){
+			objEval += tmpArr[j]; 
+		    }
+		    if(objBestEvalSol - objEval > etol){
+			objBestEvalSol = objEval;
+			memcpy(bestEvalSol, optSolRepl, sizeof(double) * uCols);
+		    }
+		    seenULSolutions[optSolReplVec] = objEval;
+		}
+	    }
+	    //optSolReplVec.clear();
+	    delete [] optSolRepl;
+	}
+	else{
+	    throw CoinError("SAA problem is infeasible",
+			    "setupSAA",
+			    "MibSModel");
+	}
+    }//for m
+
+ TERM_SETUPSAA:
+    if(evalLSolver){
+	delete evalLSolver;
+	    }
+    if(evalBestSolver){
+	delete evalBestSolver;
+    }
+    delete evalA2Matrix;
+    delete [] evalRHS;
+
+    if(isTimeLimReached == true){
+	std::cout << "Time limit is reached" << std::endl;
+    }
+    //else if(allEvalsInfeas == true){
+	//std::cout << "All solutions of replicates are infeasible ";
+	//std::cout << "with respect to evaluation sample." << std::endl;
+	//}
+    else{
+	double estimatedObj(0.0);
+	//we generate a new eval sample to be unbiased
+	double *evalRHSNew = new double[evalLRowNum];
+	CoinZeroN(evalRHSNew, evalLRowNum);
+	CoinPackedMatrix *evalA2MatrixNew = NULL;
+	evalA2MatrixNew = generateSamples(evalSampleSize, truncNumCols,
+					  truncNumRows, allScenariosNumSMPS, rowSense,
+					  b2Base, matrixA2Base, fullMatrixA2, evalRHSNew);
+
+	OsiSolverInterface * evalLSolverNew = 0;
+	OsiSolverInterface * evalBestSolverNew = 0;
+
+	CoinZeroN(tmpArr, evalSampleSize + 1);
+	objU = 0.0;
+	for(i = 0; i < evalSampleSize; i++){
+	    objL = 0.0;
+	    isLowerInfeasible = false;
+	    evalLSolverNew = setUpEvalModels(matrixG2, bestEvalSol, evalRHSNew,
+					     evalA2MatrixNew, varLB, varUB, objCoef,
+					     rowSense, colType, infinity, i, uCols, uRows);
+	    remainingTime = timeLimit - broker_->timer().getTime();
+	    remainingTime = CoinMax(remainingTime, 0.00);
+	    if(remainingTime <= etol){
+		isTimeLimReached = true;
+		break;
+	    }
+
+	    if (feasCheckSolver == "Cbc"){
+		dynamic_cast<OsiCbcSolverInterface *>
+		    (evalLSolverNew)->getModelPtr()->messageHandler()->setLogLevel(0);
+	    }else if (feasCheckSolver == "SYMPHONY"){
+#if COIN_HAS_SYMPHONY
+		sym_environment *env = dynamic_cast<OsiSymSolverInterface*>
+		    (evalLSolverNew)->getSymphonyEnvironment();
+
+		sym_set_dbl_param(env, "time_limit", remainingTime);
+		sym_set_int_param(env, "do_primal_heuristic", FALSE);
+		sym_set_int_param(env, "verbosity", -2);
+		sym_set_int_param(env, "prep_level", -1);
+		sym_set_int_param(env, "max_active_nodes", maxThreadsLL);
+		sym_set_int_param(env, "tighten_root_bounds", FALSE);
+		sym_set_int_param(env, "max_sp_size", 100);
+		sym_set_int_param(env, "do_reduced_cost_fixing", FALSE);
+		if (whichCutsLL == 0){
+		    sym_set_int_param(env, "generate_cgl_cuts", FALSE);
+		}else{
+		    sym_set_int_param(env, "generate_cgl_gomory_cuts", GENERATE_DEFAULT);
+		}
+#endif
+	    }else if (feasCheckSolver == "CPLEX"){
+#ifdef COIN_HAS_CPLEX
+		evalLSolverNew->setHintParam(OsiDoReducePrint);
+		evalLSolverNew->messageHandler()->setLogLevel(0);
+		CPXENVptr cpxEnv =
+		    dynamic_cast<OsiCpxSolverInterface*>(evalLSolverNew)->getEnvironmentPtr();
+		assert(cpxEnv);
+		CPXsetintparam(cpxEnv, CPX_PARAM_SCRIND, CPX_OFF);
+		CPXsetintparam(cpxEnv, CPX_PARAM_THREADS, maxThreadsLL);
+#endif
+	    }
+
+	    evalLSolverNew->branchAndBound();
+
+	    if(feasCheckSolver == "SYMPHONY"){
+#if COIN_HAS_SYMPHONY
+		if(sym_is_time_limit_reached(dynamic_cast<OsiSymSolverInterface*>
+					     (evalLSolverNew)->getSymphonyEnvironment())){
+		    isTimeLimReached = true;
+		    break;
+		}
+#endif
+	    }
+	    if(!evalLSolverNew->isProvenOptimal()){
+		isLowerInfeasible = true;
+		break;
+	    }
+	    else{
+		evalBestSolverNew = setUpEvalModels(matrixG2, bestEvalSol, evalRHSNew,
+						    evalA2MatrixNew, varLB, varUB, objCoef,
+						    rowSense, colType, infinity, i, uCols,
+						    uRows, evalLSolverNew->getObjValue(), false);
+
+		remainingTime = timeLimit - broker_->timer().getTime();
+		remainingTime = CoinMax(remainingTime, 0.00);
+		if(remainingTime <= etol){
+		    isTimeLimReached = true;
+		    break;
+		}
+
+		if (feasCheckSolver == "Cbc"){
+		    dynamic_cast<OsiCbcSolverInterface *>
+			(evalBestSolverNew)->getModelPtr()->messageHandler()->setLogLevel(0);
+		}else if (feasCheckSolver == "SYMPHONY"){
+#if COIN_HAS_SYMPHONY
+		    sym_environment *env = dynamic_cast<OsiSymSolverInterface*>
+			(evalBestSolverNew)->getSymphonyEnvironment();
+
+		    sym_set_dbl_param(env, "time_limit", remainingTime);
+		    sym_set_int_param(env, "do_primal_heuristic", FALSE);
+		    sym_set_int_param(env, "verbosity", -2);
+		    sym_set_int_param(env, "prep_level", -1);
+		    sym_set_int_param(env, "max_active_nodes", maxThreadsLL);
+		    sym_set_int_param(env, "tighten_root_bounds", FALSE);
+		    sym_set_int_param(env, "max_sp_size", 100);
+		    sym_set_int_param(env, "do_reduced_cost_fixing", FALSE);
+		    if (whichCutsLL == 0){
+			sym_set_int_param(env, "generate_cgl_cuts", FALSE);
+		    }else{
+			sym_set_int_param(env, "generate_cgl_gomory_cuts", GENERATE_DEFAULT);
+		    }
+#endif
+		}else if (feasCheckSolver == "CPLEX"){
+#ifdef COIN_HAS_CPLEX
+		    evalBestSolverNew->setHintParam(OsiDoReducePrint);
+		    evalBestSolverNew->messageHandler()->setLogLevel(0);
+		    CPXENVptr cpxEnv =
+			dynamic_cast<OsiCpxSolverInterface*>(evalBestSolverNew)->getEnvironmentPtr();
+		    assert(cpxEnv);
+		    CPXsetintparam(cpxEnv, CPX_PARAM_SCRIND, CPX_OFF);
+		    CPXsetintparam(cpxEnv, CPX_PARAM_THREADS, maxThreadsLL);
+#endif
+		}
+
+		evalBestSolverNew->branchAndBound();
+
+		if(feasCheckSolver == "SYMPHONY"){
+#if COIN_HAS_SYMPHONY
+		    if(sym_is_time_limit_reached(dynamic_cast<OsiSymSolverInterface*>
+						 (evalBestSolverNew)->getSymphonyEnvironment())){
+			isTimeLimReached = true;
+			break;
+		    }
+#endif
+		}
+
+		if(!evalBestSolverNew->isProvenOptimal()){
+		    throw CoinError("evlaBestSolverNew cannot be infeasible",
+				    "setupSAA",
+				    "MibSModel");
+		}
+		else{
+		    objL = evalBestSolverNew->getObjValue();
+		}
+						
+		//const double * values = evalLSolverNew->getColSolution();
+		//for(j = 0; j < truncLColNum; j++){
+		//  objL += objCoef[j + uCols] * values[j];
+		//}
+		tmpArr[i] = objL;
+	    }
+	}
+
+	if(isLowerInfeasible == true){
+	    std::cout << "Optimality gap is infinite :(" << std::endl;
+	}
+	else if(isTimeLimReached == true){
+	    std::cout << "Time limit is reached" << std::endl;
+	}   
+	else{
+	    for(j = 0; j < uCols; j++){
+		objU += objCoef[j] * bestEvalSol[j];
+	    }
+	    for(j = 0; j < evalSampleSize; j++){
+		estimatedObj += tmpArr[j];
+	    }
+	    estimatedObj = estimatedObj/evalSampleSize;
+	    estimatedObj += objU;
+	    findOptGapVarSAA(objValSAARepls, estimatedObj,
+			     estimatedLowerBound, varLower, varUpper, tmpArr);
+	    printSolutionSAA(truncNumCols, estimatedObj, estimatedLowerBound,
+			     varLower, varUpper, bestEvalSol);
+
+	    delete evalLSolverNew;
+            if(evalBestSolverNew){
+		delete evalBestSolverNew;
+	    }
+	    delete evalA2MatrixNew;
+	    delete [] evalRHSNew;
+	}
+    }
+    if(b2Base != NULL){
+	delete [] b2Base;
+    }
+    if(matrixA2Base != NULL){
+	delete matrixA2Base;
+    }
+    delete matrixG2;
+    delete [] tmpArr;
+    delete [] bestEvalSol;
+    delete [] objValSAARepls;
+
+    //saharSto2:exit :(
+    exit(0);    
+
+}
+
+//#############################################################################
+int
+MibSModel::countScenariosSMPS()
+{
+    int numScenarios(0);
+
+    std::string key;
+    
+    std::string stoFileName = getStoFile();
+    fileCoinReadable(stoFileName);
+
+    std::ifstream stoData_stream(stoFileName.c_str());
+
+    if(!stoData_stream){
+	std::cout << "Error opening input stochastic data file. Aborting.\n";
+	abort();
+    }
+
+    while(stoData_stream >> key){
+	if(key == "SC"){
+	    numScenarios ++;
+	}
+    }
+
+    return numScenarios;
+
+}
+
+//############################################################################# 
+void
+MibSModel::printSolutionSAA(int truncNumCols, double estimatedObj,
+			    double estimatedLowerBound, double varLower,
+			    double varUpper, double *bestSol)
+{
+
+    int i(0);
+    int truncLColNum(getTruncLowerDim());
+    int uCols(truncNumCols - truncLColNum);
+    double nearInt(0.0);
+    int sampleSize(MibSPar_->entry(MibSParams::sampSizeSAA));//N
+    int evalSampleSize(MibSPar_->entry(MibSParams::evalSampSizeSAA));//N'
+    int replNum(MibSPar_->entry(MibSParams::replNumSAA));//M
+    
+    std::cout <<  "============================================" << std::endl;
+
+    std::cout << "Number of replications : " << replNum << std::endl;
+    std::cout << "Number of samples in each replication : " << sampleSize << std::endl;
+    std::cout << "Number of samples in evalauation : " << evalSampleSize << std::endl;
+    std::cout << "Estimated cost (upper bound) = " << estimatedObj << std::endl;
+    for(i = 0; i < uCols; i++){
+	if(bestSol[i] > 1.0e-15 || bestSol[i] < -1.0e-15){
+	    nearInt = floor(bestSol[i] + 0.5);
+	    if(ALPS_FABS(nearInt - bestSol[i]) < 1.0e-6){
+		std::cout << "x[" << i << "] = " << nearInt << std::endl;
+	    }
+	    else{
+		std::cout << "x[" << i << "] = " << bestSol[i] << std::endl;
+	    }		    
+	}
+    }
+    std::cout << "Estimated lower bound = " << estimatedLowerBound << std::endl;
+    std::cout << "Estimated optimality gap = " << estimatedObj - estimatedLowerBound << std::endl;
+    std::cout << "Estimated standard deviation of upper bound = " << sqrt(varUpper) << std::endl;
+    std::cout << "Estimated standard deviation of lower bound = " << sqrt(varLower) << std::endl;
+    std::cout << "Estimated standard deviation of the ptimality gap = ";
+    std::cout << sqrt(varUpper + varLower) << std::endl;
+    std::cout << "Search CPU time: " << broker_->timer().getCpuTime();
+    std::cout << " seconds" << std::endl;
+    std::cout << "Search wall-clock time: " << broker_->timer().getWallClock();
+    std::cout << " seconds" << std::endl;
+    
+}
+
+//#############################################################################
+void
+MibSModel::findOptGapVarSAA(double *objValSAARepls, double estimatedObj,
+			    double &estimatedLowerBound, double&varLower,
+			    double&varUpper, double *estimatedObjComps)
+{
+    
+    int evalSampleSize(MibSPar_->entry(MibSParams::evalSampSizeSAA));//N'
+    int replNum(MibSPar_->entry(MibSParams::replNumSAA));//M 
+
+    int i(0);
+    double tmpVal(0.0);
+    int truncLRowNum(getTruncLowerRowNum());
+
+    for(i = 0; i < replNum; i++){
+	estimatedLowerBound += objValSAARepls[i];
+    }
+    estimatedLowerBound = estimatedLowerBound/replNum;
+
+    for(i = 0; i < replNum; i++){
+	varLower += pow(objValSAARepls[i] - estimatedLowerBound, 2);
+    }
+    varLower = varLower/((replNum - 1) * replNum);
+
+    tmpVal = estimatedObjComps[evalSampleSize];
+
+    for(i = 0; i < evalSampleSize; i++){
+	varUpper += pow(tmpVal + estimatedObjComps[i] -
+			   estimatedObj, 2);
+    }
+    varUpper = varUpper/((evalSampleSize - 1) * evalSampleSize);
+
+
+}
+
+//#############################################################################
+OsiSolverInterface *
+MibSModel::setUpEvalModels(CoinPackedMatrix *matrixG2, double *optSol,
+			   double *allRHS, CoinPackedMatrix *allA2Matrix,
+			   const double *origColLb, const double *origColUb,
+			   const double* uObjCoef, const char *rowSense,
+			   const char *colType, double infinity, int scenarioIndex,
+			   int uCols, int uRows, double optLowerObj,
+			   bool isLowerProblem)
+{
+
+    int isA2Random(MibSPar_->entry(MibSParams::isA2Random));
+    
+    std::string feasCheckSolver =
+	MibSPar_->entry(MibSParams::feasCheckSolver);
+
+    OsiSolverInterface *nSolver = 0;
+
+    int i(0);
+    int cnt(0);
+    int lCols = getTruncLowerDim();
+    int lRows = getTruncLowerRowNum();
+    int numCols = uCols + lCols;
+    int numRows(0);
+    double objSense(getLowerObjSense());
+    double *lObjCoeffs = getLowerObjCoeffs();
+
+    if(isLowerProblem == true){
+	numRows = lRows;
+    }
+    else{
+	numRows = lRows + 1;
+    }
+
+    //setting col bounds
+    double *colUb = new double[lCols];
+    double *colLb = new double[lCols];
+    CoinDisjointCopyN(origColUb + uCols, lCols, colUb);
+    CoinDisjointCopyN(origColLb + uCols, lCols, colLb);
+    
+
+    //setting coefficient matrix
+    CoinPackedMatrix *coefMatrix = new CoinPackedMatrix(false, 0, 0);
+    coefMatrix->setDimensions(0, lCols);
+    for(i = 0; i < lRows; i++){
+	coefMatrix->appendRow(matrixG2->getVector(i));
+    }
+    if(isLowerProblem == false){
+	CoinPackedVector row;
+	for(i = 0; i < lCols; i++){
+	    row.insert(i, lObjCoeffs[i] * objSense);
+	}
+	coefMatrix->appendRow(row);
+    }
+
+    //setting row bounds
+    double *rowUb = new double[numRows];
+    double *rowLb = new double[numRows];
+    CoinFillN(rowUb, numRows, infinity);
+    CoinFillN(rowLb, numRows, -1 * infinity);
+    if(isA2Random != PARAM_OFF){
+	cnt = lRows * scenarioIndex;
+    }
+    CoinPackedMatrix *matrixA2 = new CoinPackedMatrix(false, 0, 0);
+    matrixA2->setDimensions(0, uCols);
+    for(i = 0; i < lRows; i++){
+	matrixA2->appendRow(allA2Matrix->getVector(cnt + i));
+    }
+    double *multA2XOpt = new double[lRows];
+    matrixA2->times(optSol, multA2XOpt);
+    for(i = 0; i < lRows; i++){
+	if(rowSense[i + uRows] == 'L'){
+	    rowUb[i] = allRHS[lRows * scenarioIndex + i] - multA2XOpt[i];
+	}
+	if(rowSense[i + uRows] == 'G'){
+	    rowLb[i] = allRHS[lRows * scenarioIndex + i] - multA2XOpt[i];
+	}
+    }
+    if(isLowerProblem == false){
+	rowUb[lRows] = optLowerObj;
+    }
+
+    double *objCoeffs = new double[lCols];
+    if(isLowerProblem == true){
+	memcpy(objCoeffs, lObjCoeffs, sizeof(double) * lCols);
+    }
+    else{
+	CoinDisjointCopyN(uObjCoef + uCols, lCols, objCoeffs);
+    }
+    
+
+    if (feasCheckSolver == "Cbc"){
+	nSolver = new OsiCbcSolverInterface();
+    }else if (feasCheckSolver == "SYMPHONY"){
+#ifdef COIN_HAS_SYMPHONY
+	nSolver = new OsiSymSolverInterface();
+#else
+	throw CoinError("SYMPHONY chosen as solver, but it has not been enabled",
+			"setUpEvalModels", "MibSModel");
+#endif
+    }else if (feasCheckSolver == "CPLEX"){
+#ifdef COIN_HAS_CPLEX
+	nSolver = new OsiCpxSolverInterface();
+#else
+	throw CoinError("CPLEX chosen as solver, but it has not been enabled",
+			"setUpEvalModels", "MibSModel");
+#endif
+    }else{
+	throw CoinError("Unknown solver chosen",
+			"setUpModel", "MibsBilevel");
+    }
+
+    nSolver->loadProblem(*coefMatrix, colLb, colUb,
+			 objCoeffs, rowLb, rowUb);
+
+    for(i = uCols; i < numCols; i++){
+	if((colType[i] == 'B') || (colType[i] == 'I')){
+	    nSolver->setInteger(i - uCols);
+	}
+    }
+
+    nSolver->setObjSense(objSense); 
+
+    nSolver->setHintParam(OsiDoReducePrint, true, OsiHintDo);
+
+    delete [] colLb;
+    delete [] colUb;
+    delete [] objCoeffs;
+    delete [] rowLb;
+    delete [] rowUb;
+    delete [] multA2XOpt;
+    delete matrixA2;
+    delete coefMatrix;
+
+    return nSolver;
+
+}
+
+//#############################################################################
+double *
+MibSModel::solveSAA(const CoinPackedMatrix& matrix,
+		    const CoinPackedMatrix& rowMatrix,
+		    const double* varLB, const double* varUB,
+		    const double* objCoef, const double* conLB,
+		    const double* conUB, const char * colType, int lcmDenum,
+		    double objSense, int truncNumCols, int truncNumRows,
+		    double infinity, const char *rowSense, bool &isTimeLimReached,
+		    double &objSAA, int allScenariosNumSMPS, double *b2Base,
+		    CoinPackedMatrix *matrixA2Base,
+		    const std::vector<std::vector<double> > &fullMatrixA2)
+{
+    int isA2Random(MibSPar_->entry(MibSParams::isA2Random));
+
+    std::string feasCheckSolver
+	= MibSPar_->entry(MibSParams::feasCheckSolver);
+
+    double timeLimit(AlpsPar()->entry(AlpsParams::timeLimit));
+
+    int clockType(AlpsPar()->entry(AlpsParams::clockType));
+
+    bool useUBDecompose(MibSPar_->entry(MibSParams::useUBDecompose));
+
+    double etol(etol_);
+    int sampleSize(MibSPar_->entry(MibSParams::sampSizeSAA));//N
+    int i(0), j(0);
+    int index(0), pos(0);
+    double optVal(0.0);
+    int truncLColNum(getTruncLowerDim());
+    int truncLRowNum(getTruncLowerRowNum());
+    int uColNum(truncNumCols - truncLColNum);
+    int uRowNum(truncNumRows - truncLRowNum);
+    int lColNum(sampleSize * truncLColNum);
+    int lRowNum(sampleSize * truncLRowNum);
+    int numRows(uRowNum + lRowNum);
+    
+    double remainingTime = timeLimit - broker_->timer().getTime();
+    remainingTime = CoinMax(remainingTime, 0.00);
+
+    if(remainingTime < etol){
+	isTimeLimReached = true;
+	return NULL;
+    }
+    
+    /** Create new MibS model to solve bilevel **/
+    MibSModel *modelSAA = new MibSModel();
+
+    /** Set up lp solver **/
+    OsiClpSolverInterface lpSolver;
+    lpSolver.getModelPtr()->setDualBound(1.0e10);
+    lpSolver.messageHandler()->setLogLevel(0);
+    modelSAA->setSolver(&lpSolver);
+    //set parameters
+    //modelSAA->AlpsPar()->setEntry(AlpsParams::msgLevel, -1);
+    //modelSAA->AlpsPar()->setEntry(AlpsParams::nodeLimit, boundCutNodeLim);
+    modelSAA->AlpsPar()->setEntry(AlpsParams::timeLimit, remainingTime);
+    modelSAA->BlisPar()->setEntry(BlisParams::heurStrategy, 0);
+    modelSAA->MibSPar()->setEntry(MibSParams::feasCheckSolver, feasCheckSolver.c_str());
+    modelSAA->MibSPar()->setEntry(MibSParams::printProblemInfo, false);
+    modelSAA->MibSPar()->setEntry(MibSParams::useBoundCut, false);
+    //saharSto2: think about it
+    modelSAA->MibSPar()->setEntry(MibSParams::branchStrategy, MibSBranchingStrategyLinking);
+    //modelSAA->MibSPar()->setEntry(MibSParams::branchStrategy, MibSBranchingStrategyFractional);
+    modelSAA->MibSPar()->setEntry(MibSParams::bilevelCutTypes, 0);
+    modelSAA->MibSPar()->setEntry(MibSParams::useBendersCut, PARAM_OFF);
+    modelSAA->MibSPar()->setEntry(MibSParams::useNoGoodCut, PARAM_OFF);
+    modelSAA->MibSPar()->setEntry(MibSParams::useGeneralNoGoodCut, PARAM_OFF);
+    modelSAA->MibSPar()->setEntry(MibSParams::useTypeIC, PARAM_OFF);
+    modelSAA->MibSPar()->setEntry(MibSParams::useTypeWatermelon, PARAM_OFF);
+    modelSAA->MibSPar()->setEntry(MibSParams::useTypeHypercubeIC, PARAM_ON);
+    modelSAA->MibSPar()->setEntry(MibSParams::useTypeTenderIC, PARAM_OFF);
+    modelSAA->MibSPar()->setEntry(MibSParams::useTypeHybridIC, PARAM_OFF);
+    modelSAA->MibSPar()->setEntry(MibSParams::useIncObjCut, PARAM_OFF);
+    modelSAA->MibSPar()->setEntry(MibSParams::usePureIntegerCut, PARAM_OFF);
+    modelSAA->MibSPar()->setEntry(MibSParams::useNewPureIntCut, false);
+    modelSAA->MibSPar()->setEntry(MibSParams::solveSecondLevelWhenXYVarsInt, PARAM_ON);
+    modelSAA->MibSPar()->setEntry(MibSParams::solveSecondLevelWhenXVarsInt, PARAM_OFF);
+    modelSAA->MibSPar()->setEntry(MibSParams::solveSecondLevelWhenLVarsInt, PARAM_OFF);
+    modelSAA->MibSPar()->setEntry(MibSParams::solveSecondLevelWhenLVarsFixed, PARAM_ON);
+    modelSAA->MibSPar()->setEntry(MibSParams::computeBestUBWhenXVarsInt, PARAM_OFF);
+    modelSAA->MibSPar()->setEntry(MibSParams::computeBestUBWhenLVarsInt, PARAM_OFF);
+    modelSAA->MibSPar()->setEntry(MibSParams::computeBestUBWhenLVarsFixed, PARAM_ON);
+    modelSAA->MibSPar()->setEntry(MibSParams::useLinkingSolutionPool, PARAM_ON);
+
+    modelSAA->isInterdict_ = false;
+    modelSAA->MibSPar()->setEntry(MibSParams::stochasticityType, "stochasticWithSAA");
+    modelSAA->MibSPar()->setEntry(MibSParams::isA2Random, isA2Random);
+    modelSAA->MibSPar()->setEntry(MibSParams::useUBDecompose, useUBDecompose);
+    modelSAA->AlpsPar()->setEntry(AlpsParams::clockType, clockType);
+    
+
+    modelSAA->numScenarios_ = sampleSize;
+
+    double *b2Arr = new double[lRowNum];
+    CoinZeroN(b2Arr, lRowNum);
+    CoinPackedMatrix *stocA2Matrix = NULL;
+    stocA2Matrix = generateSamples(sampleSize, truncNumCols,
+				   truncNumRows, allScenariosNumSMPS, rowSense,
+				   b2Base, matrixA2Base, fullMatrixA2, b2Arr);
+
+    modelSAA->setTruncLowerDim(truncLColNum);
+    modelSAA->setTruncLowerRowNum(truncLRowNum);
+
+    modelSAA->lowerObjCoeffs_ = new double[truncLColNum];
+    memcpy(modelSAA->lowerObjCoeffs_, getLowerObjCoeffs(),
+	   sizeof(double) * truncLColNum);
+
+    modelSAA->setLowerObjSense(getLowerObjSense());
+
+    modelSAA->lowerColInd_ = new int[truncLColNum];
+    modelSAA->lowerRowInd_ = new int[truncLRowNum];
+    CoinIotaN(modelSAA->lowerColInd_, truncLColNum, uColNum);
+    CoinIotaN(modelSAA->lowerRowInd_, truncLRowNum, uRowNum);
+
+    modelSAA->setStocA2Matrix(stocA2Matrix);
+
+    modelSAA->setLowerDim(lColNum);
+    modelSAA->setLowerRowNum(lRowNum);
+    
+    modelSAA->origRowLb_ = new double[numRows];
+    modelSAA->origRowUb_ = new double[numRows];
+    CoinFillN(modelSAA->origRowLb_, numRows, -1 * infinity);
+    CoinFillN(modelSAA->origRowUb_, numRows, infinity);
+
+    for(i = 0; i < sampleSize; i++){
+	pos = i * truncLRowNum;
+	for(j = uRowNum; j < truncNumRows; j++){
+	    index = pos + j;
+	    if(rowSense[j] == 'L'){
+		modelSAA->origRowUb_[index] = b2Arr[index - uRowNum];
+	    }
+	    if(rowSense[j] == 'G'){
+		modelSAA->origRowLb_[index] = b2Arr[index - uRowNum];
+	    }
+	}
+    }
+
+    modelSAA->loadProblemData(matrix, rowMatrix, varLB, varUB, objCoef,
+			      conLB, conUB, colType, objSense, infinity, rowSense,
+			      lcmDenum);
+
+
+    int argc = 1;
+    char** argv = new char* [1];
+    argv[0] = (char *) "mibs";
+
+#ifdef  COIN_HAS_MPI
+    AlpsKnowledgeBrokerMPI brokerSAA(argc, argv, *modelSAA);
+#else
+    AlpsKnowledgeBrokerSerial brokerSAA(argc, argv, *modelSAA);
+#endif
+
+    brokerSAA.search(modelSAA);
+
+    brokerSAA.printBestSolution();
+
+    MibSSolution *mibsSol = NULL;
+
+    if(brokerSAA.getSolStatus() == AlpsExitStatusOptimal){
+	AlpsSolution *sol = dynamic_cast<AlpsSolution* >
+	    (brokerSAA.getBestKnowledge(AlpsKnowledgeTypeSolution).first);
+	objSAA = brokerSAA.getBestQuality();
+	objSAA = objSAA/sampleSize;
+	mibsSol = dynamic_cast<MibSSolution* >(sol);
+    }
+
+    double *optSol = NULL;
+    if(mibsSol != NULL){
+	optSol = new double[uColNum];
+	for(i = 0; i < uColNum; i++){
+	    optVal = mibsSol->getValues()[i];
+	    if(modelSAA->solver()->isInteger(i)){
+		optSol[i] = floor(optVal + 0.5);
+	    }
+	    else{
+		optSol[i] = optVal;
+	    }
+	}
+    }
+    else{
+	if(brokerSAA.getSolStatus() == AlpsExitStatusTimeLimit){
+	    isTimeLimReached = true;
+	}
+	else if(brokerSAA.getNumKnowledges(AlpsKnowledgeTypeSolution) <= 0){
+	    throw CoinError("SAA problem is infeasible",
+			    "solveSAA",
+			    "MibSModel");
+	}
+    }
+
+    delete [] b2Arr;
+    delete modelSAA;
+
+    return optSol;
+	    
+}
+
+//#############################################################################
+CoinPackedMatrix *
+MibSModel::generateSamples(int size, int truncNumCols, int truncNumRows,
+			   int allScenariosNum, const char *rowSense,
+			   double *b2Base, CoinPackedMatrix *matrixA2Base,
+			   const std::vector<std::vector<double> > &fullMatrixA2,
+			   double *rhs)
+{
+    int isSMPSFormat(MibSPar_->entry(MibSParams::isSMPSFormat));
+    int isA2Random(MibSPar_->entry(MibSParams::isA2Random));
+    
+    int i(0), j(0), n(0), p(0);
+    int numGeneratedSamples(0), count(0), posRow(0), posCol(0), index(0);
+    int genVal(0), scCount(0);
+    bool generatedBefore(false), isFinished(false);
+    double tmpVal(0.0), dValue(0.0), element(0.0);
+    std::string key;
+    CoinPackedVector appendedRow;
+    double etol(etol_);
+    int truncLowerDim(getTruncLowerDim());
+    int truncLowerRowNum(getTruncLowerRowNum());
+    int uColNum(truncNumCols - truncLowerDim);
+    int uRowNum(truncNumRows - truncLowerRowNum);
+    
+    CoinPackedVector row;
+    CoinPackedMatrix *stocMatrixA2 = 0;
+    stocMatrixA2 = new CoinPackedMatrix(false, 0, 0);
+    stocMatrixA2->setDimensions(0, uColNum);
+
+#ifdef COIN_HAS_C11
+    static unsigned int lastSeed = 123456;
+    lastSeed = 1664525 * lastSeed + 1013904223;
+    std::default_random_engine generator;
+    generator.seed(lastSeed);
+#endif
+    
+    if(isSMPSFormat == PARAM_ON){
+	std::string stoFileName = getStoFile();
+	std::ifstream stoData_stream(stoFileName.c_str());
+#ifdef COIN_HAS_C11
+	std::uniform_int_distribution<int> distScenIndex(1, allScenariosNum);
+#endif
+
+	int *scenIndex = new int[size];
+	while(numGeneratedSamples < size){
+#ifdef COIN_HAS_C11
+	    index = distScenIndex(generator);
+#else
+	    index = 1 + int(CoinDrand48() * allScenariosNum);
+#endif
+	    generatedBefore = false;
+	    for(i = 0; i < numGeneratedSamples; i++){
+		if(scenIndex[i] == index){
+		    generatedBefore = true;
+		    break;
+		}
+	    }
+	    if(generatedBefore == false){
+		scenIndex[numGeneratedSamples] = index;
+		numGeneratedSamples ++;
+	    }
+	}
+
+	stoData_stream.close();
+
+	std::vector<std::vector<double> > fullMatrixA2Copy;
+
+	if(isA2Random != PARAM_OFF){
+	    fullMatrixA2Copy.resize(truncLowerRowNum, std::vector<double>(uColNum, 0.0));
+	    for(i = 0; i < truncLowerRowNum; i++){
+		for(j = 0; j < uColNum; j++){
+		    fullMatrixA2Copy[i][j] = fullMatrixA2[i][j];
+		}
+	    }
+	}
+	else{
+	    for(i = 0; i < truncLowerRowNum; i++){
+		stocMatrixA2->appendRow(matrixA2Base->getVector(i));
+	    }
+	}
+
+	for(i = 0; i < size; i++){
+	    count = 1;
+	    index = i * truncLowerRowNum;
+	    CoinDisjointCopyN(rhs + index, truncLowerRowNum, b2Base);
+	    stoData_stream.open(stoFileName.c_str());
+	    while(stoData_stream >> key){
+		isFinished = false;
+		if(key == "SC"){
+		    if(count == scenIndex[i]){
+			stoData_stream >> key;
+			stoData_stream >> key;
+			stoData_stream >> key;
+			stoData_stream >> key;
+			while(isFinished == false){
+			    stoData_stream >> key;
+			    if((key == "SC") || (key == "ENDATA")){
+				isFinished = true;
+			    }
+			    else if(key == "RHS"){
+				stoData_stream >> key;
+				stoData_stream >> dValue;
+				posRow = -1;
+				for(p = 0; p < truncNumRows; p++){
+				    if(rowName_[p] == key){
+					posRow = p;
+					break;
+				    }
+				}
+				if(posRow < 0){
+				    std::cout << key << " does not belong to the list of constraints." << std::endl;
+				    throw CoinError("Wrong constriant name",
+						    "generateSamples",
+						    "MibSModel");
+				}
+				else if(posRow < uRowNum){
+				    throw CoinError("Upper-level RHS cannot be random",
+						    "generateSamples",
+						    "MibSModel");
+				}
+				else{
+				    index = i * truncLowerRowNum + posRow - uRowNum;
+				    if(rowSense[posRow] == 'L'){
+					rhs[index] = dValue;
+				    }
+				    else{
+					rhs[index] = dValue;
+				    }
+				}
+				
+			    }
+			    else{
+				posCol = -1;
+				for(p = 0; p < truncNumCols; p++){
+				    if(columnName_[p] == key){
+					posCol = p;
+					break;
+				    }
+				}
+				if(posCol < 0){
+				    std::cout << key << " does not belong to the list of variables." << std::endl;
+				    throw CoinError("Wrong variable name",
+						    "generateSamples",
+						    "MibSModel");
+				}
+				else if(posCol >= uColNum){
+				    throw CoinError("Lower-level coefficients cannot be random",
+						    "generateSamples",
+						    "MibSModel");
+				}
+				else{
+				    stoData_stream >> key;
+				    stoData_stream >> dValue;
+				    posRow = -1;
+				    for(p = 0; p < truncNumRows; p++){
+					if(rowName_[p] == key){
+					    posRow = p;
+					    break;
+					}
+				    }
+				    if(posRow < 0){
+					std::cout << key << " does not belong to the list of constraints." << std::endl;
+					throw CoinError("Wrong constriant name",
+							"generateSamples",
+							"MibSModel");
+				    }
+				    else if(posRow < uRowNum){
+					throw CoinError("Coefficients of lower-level constraints cannot be random",
+							"generateSamples",
+							"MibSModel");
+				    }
+				    else{
+					index = i * truncLowerRowNum + posRow - uRowNum;
+					fullMatrixA2Copy[index][posCol] = dValue;
+				    }
+				    
+				}
+			    }
+			}
+		    }
+		    else{
+			count ++;
+		    }
+		}
+		if(isFinished == true){
+		    stoData_stream.close();
+		    break;
+		}
+	    }
+	    if(isA2Random != PARAM_OFF){
+		for(p = 0; p < truncLowerRowNum; p++){
+		    for(j = 0; j < uColNum; j++){
+			element = fullMatrixA2Copy[p][j];
+			if(fabs(element) > etol){
+			    appendedRow.insert(j, element);
+			}
+		    }
+		    stocMatrixA2->appendRow(appendedRow);
+		    appendedRow.clear();
+		}
+	    }
+	}
+	delete [] scenIndex;
+    }
+    else{
+	int intRandVal;
+	int lbB2(MibSPar_->entry(MibSParams::lbDistB2SAA));
+	int ubB2(MibSPar_->entry(MibSParams::ubDistB2SAA));
+	int lbA2(MibSPar_->entry(MibSParams::lbDistA2SAA));
+	int ubA2(MibSPar_->entry(MibSParams::ubDistA2SAA));
+        //saharSto2: it is assumed that incB2Numer <= incB2Denum
+	//and they are relatively prime (the same for A2)
+	//strict assumption: numerators are 1
+	int incB2Numer(MibSPar_->entry(MibSParams::incDistB2NumerSAA));
+        int incB2Denum(MibSPar_->entry(MibSParams::incDistB2DenumSAA));
+        int incA2Numer(MibSPar_->entry(MibSParams::incDistA2NumerSAA));
+        int incA2Denum(MibSPar_->entry(MibSParams::incDistA2DenumSAA));
+
+	int gcdDenum = greatestCommonDivisor(CoinMin(incB2Denum, incA2Denum), CoinMax(incB2Denum, incA2Denum));
+        int lcmDenum = (incB2Denum * incA2Denum)/gcdDenum;
+
+        int tmpB2 = (ubB2 - lbB2) * incB2Denum/incB2Numer + 1;
+        int tmpA2 = (ubA2 - lbA2) * incA2Denum/incA2Numer + 1;
+
+#ifdef COIN_HAS_C11
+        std::uniform_int_distribution<int> distB2(1, tmpB2);
+        std::uniform_int_distribution<int> distA2(1, tmpA2);
+#endif
+    
+        for(n = 0; n < size; n++){
+	    //generate A2
+	    for(i = 0; i < truncLowerRowNum; i++){
+		for(j = 0; j < uColNum; j++){
+#ifdef COIN_HAS_C11
+		    tmpVal = (distA2(generator) - 1) * incA2Numer * lcmDenum/incA2Denum + lbA2 * lcmDenum;
+#else
+		    intRandVal = 1 + int(CoinDrand48() * tmpA2);
+		    tmpVal = (intRandVal - 1) * incA2Numer * lcmDenum/incA2Denum + lbA2 * lcmDenum;
+#endif
+		    if(fabs(tmpVal) > etol_){
+			genVal = (int)round(tmpVal);
+		        row.insert(j, genVal);
+		    }
+		}
+		stocMatrixA2->appendRow(row);
+	        row.clear();
+#ifdef COIN_HAS_C11
+	        tmpVal = (distB2(generator) - 1) * incB2Numer * lcmDenum/incB2Denum + lbB2 * lcmDenum;
+#else
+		intRandVal = 1 + int(CoinDrand48() * tmpB2);
+		tmpVal = (intRandVal - 1) * incB2Numer * lcmDenum/incB2Denum + lbB2 * lcmDenum;
+#endif
+	        genVal = (int)round(tmpVal);
+	        rhs[n * truncLowerRowNum + i] = genVal;
+	    }
+	}
+    }
+
+    return stocMatrixA2;
+}
+
+//#############################################################################
+int
+MibSModel::greatestCommonDivisor(int number1, int number2)
+{
+    if(number1 == 0){
+	return number2;
+    }
+    return greatestCommonDivisor(number2 % number1, number1);
+}
+
+//#############################################################################
 void
 MibSModel::loadProblemData(const CoinPackedMatrix& matrix,
+			   const CoinPackedMatrix& rowMatrix,
 			   const double* colLB, const double* colUB,   
 			   const double* obj, const double* rowLB,
 			   const double* rowUB, const char *types,
-			   double objSense, double infinity, const char *rowSense)
+			   double objSense, double infinity, const char *rowSense,
+			   int lcmDenum)
 {
    //FIXME: THIS ISN'T TRUE IF WE LOAD AN INTERDICTION PROBLEM 
    //AS A "GENERAL" PROBLEM.  FOR NOW, IT'S OK SINCE WE ONLY
    //DO THIS FROM KNAP SOLVER, WHICH SHOULD SET THIS ITSELF.
 
-   int problemType(MibSPar_->entry(MibSParams::bilevelProblemType));
+    int numRows(0), numCols(0);
+    int numScenarios(getNumScenarios());
 
-   int i(0);
-   
-   if(isInterdict_ == true){
-       if(problemType == PARAM_NOTSET){
-	   MibSPar()->setEntry(MibSParams::bilevelProblemType, INTERDICT);
-       }
-       else if(problemType == GENERAL){
-	   std::cout << "Wrong value for MibSProblemType. Automatically modifying its value." << std::endl;
-	   MibSPar()->setEntry(MibSParams::bilevelProblemType, INTERDICT);
-       }
-   }
-   else{
-       if(problemType == PARAM_NOTSET){
-	   MibSPar()->setEntry(MibSParams::bilevelProblemType, GENERAL);
-       }
-   else if(problemType == INTERDICT){
-   	   std::cout << "Wrong value for MibSProblemType. Automatically modifying its value." << std::endl;
-   	   MibSPar()->setEntry(MibSParams::bilevelProblemType, GENERAL);
-     }
-   }
+    std::string stochasticityType(MibSPar_->entry
+				  (MibSParams::stochasticityType));
 
-   problemType = MibSPar_->entry(MibSParams::bilevelProblemType);
+    int isA2Random(MibSPar_->entry(MibSParams::isA2Random));
+
+    int problemType(MibSPar_->entry(MibSParams::bilevelProblemType));
+
+    int isSMPSFormat(MibSPar_->entry(MibSParams::isSMPSFormat));
+
+    if(stochasticityType == "deterministic"){
+	numScenarios_ = 1;
+    }
+
+    if(stochasticityType == "deterministic"){
+
+        //int i(0);
+
+	if(isInterdict_ == true){
+	    if(problemType == PARAM_NOTSET){
+		MibSPar()->setEntry(MibSParams::bilevelProblemType, INTERDICT);
+	    }
+	    else if(problemType == GENERAL){
+		std::cout << "Wrong value for MibSProblemType. Automatically modifying its value." << std::endl;
+		MibSPar()->setEntry(MibSParams::bilevelProblemType, INTERDICT);
+	    }
+	}
+	else{
+	    if(problemType == PARAM_NOTSET){
+		MibSPar()->setEntry(MibSParams::bilevelProblemType, GENERAL);
+	    }
+	    else if(problemType == INTERDICT){
+		std::cout << "Wrong value for MibSProblemType. Automatically modifying its value." << std::endl;
+		MibSPar()->setEntry(MibSParams::bilevelProblemType, GENERAL);
+	    }
+	}
+
+	problemType = MibSPar_->entry(MibSParams::bilevelProblemType);
+
+	numRows = matrix.getNumRows();
+	numCols = matrix.getNumCols();
+    }
   
-   int j(0);
+   int i(0), j(0);
    int beg(0);
-
-   int numRows = matrix.getNumRows();
-   int numCols = matrix.getNumCols();
 
    double *varLB(NULL);  
    double *varUB(NULL);  
@@ -705,35 +3589,181 @@ MibSModel::loadProblemData(const CoinPackedMatrix& matrix,
       
        //case 0:
 
-   if((problemType == 0) || (interdictCost_ == NULL)){
+   if((stochasticityType != "deterministic") ||
+      (problemType == 0) || (interdictCost_ == NULL)){
 
-      if (!structRowInd_){
-	 structRowInd_ = new int[numRows];
-	 CoinIotaN(structRowInd_, numRows, 0);
-	 structRowNum_ = numRows;
-      }
-      
-      //Make copies of the data
-      newMatrix = new CoinPackedMatrix();
-      *newMatrix = matrix;
-      
-      varLB = new double [numCols];
-      varUB = new double [numCols];
-      conLB = new double [numRows];
-      conUB = new double [numRows];
-      objCoef = new double [numCols];
-      colType = new char [numCols];
+      if(stochasticityType == "deterministic"){
+	  if (!structRowInd_){
+	      structRowInd_ = new int[numRows];
+	      CoinIotaN(structRowInd_, numRows, 0);
+	      structRowNum_ = numRows;
+	  }
+	  
+	  //Make copies of the data
+	  newMatrix = new CoinPackedMatrix();
+          *newMatrix = matrix;
+
+	  varLB = new double [numCols];
+	  varUB = new double [numCols];
+	  conLB = new double [numRows];
+	  conUB = new double [numRows];
+	  objCoef = new double [numCols];
+	  colType = new char [numCols];
  
-      CoinDisjointCopyN(colLB, numCols, varLB);
-      CoinDisjointCopyN(colUB, numCols, varUB);
-      CoinDisjointCopyN(rowLB, numRows, conLB);
-      CoinDisjointCopyN(rowUB, numRows, conUB);
-      CoinDisjointCopyN(obj, numCols, objCoef);
-      memcpy(colType, types, numCols);
+          CoinDisjointCopyN(colLB, numCols, varLB);
+          CoinDisjointCopyN(colUB, numCols, varUB);
+          CoinDisjointCopyN(rowLB, numRows, conLB);
+          CoinDisjointCopyN(rowUB, numRows, conUB);
+          CoinDisjointCopyN(obj, numCols, objCoef);
+          memcpy(colType, types, numCols);
 
-      origRowSense_ = new char[numRows];
-      memcpy(origRowSense_, rowSense, numRows);
+          origRowSense_ = new char[numRows];
+          memcpy(origRowSense_, rowSense, numRows);
+      }
+      else{
+	  int k(0);
+	  int colBeg(0), rowBeg(0), index(0);
+	  double prob(0.0);
+	  std::vector<double> scenarioProb(getScenarioProb());
+	  CoinPackedMatrix *stocA2Matrix(getStocA2Matrix());
+	  int numLCols(getLowerDim());
+	  int numLRows(getLowerRowNum());
+	  int truncNumLCols(getTruncLowerDim());
+	  int truncNumLRows(getTruncLowerRowNum());
+	  int truncNumCols(matrix.getNumCols());
+	  int truncNumRows(matrix.getNumRows());
+	  int numUCols = truncNumCols - truncNumLCols;
+	  int numURows = truncNumRows - truncNumLRows;
+	  numCols = numUCols + numLCols;
+	  numRows = numURows + numLRows;
+	  
+	  CoinPackedVector row1;
+	  CoinPackedVector row2;
+	  int *rowInd = NULL;
+	  double *rowElem = NULL;
+	  int rowNumElem(0);
 
+	  if (!structRowInd_){
+	      structRowInd_ = new int[numRows];
+	      CoinIotaN(structRowInd_, numRows, 0);
+	      structRowNum_ = numRows;
+	  }
+
+	  varLB = new double [numCols];
+	  varUB = new double [numCols];
+	  conLB = new double [numRows];
+	  conUB = new double [numRows];
+	  objCoef = new double [numCols];
+	  colType = new char [numCols];
+
+	  //set matrix
+	  //extract truncG2
+	  //int lcmDenum (1);
+	  //if(stochasticityType == "stochasticWithSAA"){
+	  //  lcmDenum = 1;
+	  //  }
+	   
+	  CoinPackedMatrix *truncMatrixG2 = NULL;
+	  truncMatrixG2 = new CoinPackedMatrix(true, 0, 0);
+	  truncMatrixG2->setDimensions(truncNumLRows, 0);
+	  for(i = numUCols; i < truncNumCols; i++){
+	      row1 = matrix.getVector(i);
+	      rowInd = row1.getIndices();
+	      rowElem = row1.getElements();
+	      rowNumElem = row1.getNumElements();
+	      for(j = 0; j < rowNumElem; j++){
+		  row2.insert(rowInd[j] - numURows, rowElem[j] * lcmDenum);
+	      }
+	      truncMatrixG2->appendCol(row2);
+	      row1.clear();
+	      row2.clear();
+	  }
+	  truncMatrixG2->reverseOrdering();
+
+	  //matrix.reverseOrdering();
+
+	  newMatrix = new CoinPackedMatrix(false, 0, 0);
+	  newMatrix->setDimensions(0, numCols);
+	  for(i = 0; i < numURows; i++){
+	      newMatrix->appendRow(rowMatrix.getVector(i));
+	  }
+
+	  for(i = 0; i < numScenarios; i++){
+	      for(j = 0; j < truncNumLRows; j++){
+		  if(isA2Random != PARAM_OFF){
+		      rowBeg = i * truncNumLRows;
+		  }
+		  row1 = truncMatrixG2->getVector(j);
+		  rowInd = row1.getIndices();
+		  rowElem = row1.getElements();
+		  rowNumElem = row1.getNumElements();
+		  row2 = stocA2Matrix->getVector(rowBeg + j);
+		  for(k = 0; k < rowNumElem; k++){
+		      row2.insert(numUCols + i * truncNumLCols +
+				  rowInd[k], rowElem[k]);
+		  }
+		  newMatrix->appendRow(row2);
+	      }
+	      row1.clear();
+	      row2.clear();
+	  }
+
+	  newMatrix->reverseOrdering();
+
+	  delete truncMatrixG2;
+
+	  //set row and col bounds and col type
+	  colBeg = truncNumCols;
+	  CoinDisjointCopyN(colLB, truncNumCols, varLB);
+	  CoinDisjointCopyN(colUB, truncNumCols, varUB);
+	  CoinDisjointCopyN(types, truncNumCols, colType);
+	  for(i = 0; i < numScenarios - 1; i++){
+	      CoinDisjointCopyN(colLB + numUCols, truncNumLCols,
+				varLB + colBeg);
+	      CoinDisjointCopyN(colUB + numUCols, truncNumLCols,
+				varUB + colBeg);
+	      CoinDisjointCopyN(types + numUCols, truncNumLCols,
+				colType + colBeg);
+
+	      colBeg += truncNumLCols;
+	  }
+
+	  //saharSto: can we avoid defining conLB and conUB?
+	  CoinDisjointCopyN(rowLB, numURows, origRowLb_);
+	  CoinDisjointCopyN(rowUB, numURows, origRowUb_);
+	  memcpy(conLB, origRowLb_, sizeof(double) * numRows);
+	  memcpy(conUB, origRowUb_, sizeof(double) * numRows);
+
+	  //set objective
+	  index = numUCols;
+	  CoinDisjointCopyN(obj, numUCols, objCoef);
+	  if(stochasticityType == "stochasticWithoutSAA"){
+	      double *subObjCoef = new double[truncNumLCols];
+	      CoinDisjointCopyN(obj + numUCols, truncNumLCols, subObjCoef);
+	      for(i = 0; i < numScenarios; i++){
+		  prob = scenarioProb[i];
+		  for(j = 0; j < truncNumLCols; j++){
+		      objCoef[index] = prob * subObjCoef[j];
+		      index ++;
+		  }
+	      }
+
+	      delete [] subObjCoef;
+	  }
+	  else{
+	      for(i = 0; i < numUCols; i++){
+		  objCoef[i] = objCoef[i] * numScenarios;
+	      }
+	      for(i = 0; i < numScenarios; i++){
+		  index = numUCols + i * truncNumLCols;
+		  CoinDisjointCopyN(obj + numUCols, truncNumLCols, objCoef + index);
+	      }
+	  }
+
+	  //saharSto: check it
+	  origRowSense_ = new char[truncNumRows];
+	  memcpy(origRowSense_, rowSense, truncNumRows);
+      }
    }
    else{    
       //------------------------------------------------------
@@ -780,9 +3810,9 @@ MibSModel::loadProblemData(const CoinPackedMatrix& matrix,
 
       CoinFillN(varLB, numCols, 0.0); 
       CoinFillN(varUB, numCols, 1.0); 
-      
+   
       CoinFillN(varLB + 2 * numCols, numAuxCols, 0.0); 
-      CoinFillN(varUB + 2 * numCols, numAuxCols, 1.0); 
+      CoinFillN(varUB + 2 * numCols, numAuxCols, 1.0);
       
       CoinDisjointCopyN(rowLB, numRows, conLB + auxULRows);
       CoinDisjointCopyN(rowUB, numRows, conUB + auxULRows);
@@ -968,7 +3998,9 @@ MibSModel::loadProblemData(const CoinPackedMatrix& matrix,
    setProblemType(); //determine the type of MIBLP
    //determine the list of first-stage variables participate in second-stage constraints
    setRequiredFixedList(newMatrix);
-   instanceStructure(newMatrix, conLB, conUB, rowSense);
+   if((stochasticityType == "deterministic") || (stochasticityType == "stochasticWithoutSAA")){
+       instanceStructure(newMatrix, conLB, conUB, rowSense);
+   }
 }
 
 //#############################################################################
@@ -976,35 +4008,45 @@ void
 MibSModel::setUpperColData()
 {
 
+    std::string stochasticityType(MibSPar_->entry
+				  (MibSParams::stochasticityType));
+    
    int lowerColNum(lowerDim_);
+   
    if (!upperDim_){
       upperDim_ = numVars_ - lowerDim_;
-      int * lowerColInd = getLowerColInd();
-      
+
       if(!getUpperColInd())
-	 upperColInd_ = new int[upperDim_];
+	  upperColInd_ = new int[upperDim_];
+
+      if(stochasticityType == "deterministic"){
+	  int * lowerColInd = getLowerColInd();
       
-      int i(0), cnt(0);
+          int i(0), cnt(0);
 
-      for (i = 0; i < lowerDim_ + upperDim_; i++){
-	 if((!findIndex(i, lowerColNum, lowerColInd)) 
-	    && (colType_[i] != 'C')){
-	    upperColInd_[cnt] = i;
-	    cnt++;
-	    if(0)
-	       std::cout << "i: " << i << std::endl;
-	 }
-      }
+          for (i = 0; i < lowerDim_ + upperDim_; i++){
+	      if((!findIndex(i, lowerColNum, lowerColInd))
+		 && (colType_[i] != 'C')){
+		  upperColInd_[cnt] = i;
+		  cnt++;
+		  if(0)
+		      std::cout << "i: " << i << std::endl;
+	      }
+	  }
 
-      for(i = 0; i < lowerDim_ + upperDim_; i++){
-	 if((!findIndex(i, lowerColNum, lowerColInd)) 
-	    && (colType_[i] == 'C')){
-	    upperColInd_[cnt] = i;
-	    cnt++;
-	 }
+          for(i = 0; i < lowerDim_ + upperDim_; i++){
+	      if((!findIndex(i, lowerColNum, lowerColInd))
+		 && (colType_[i] == 'C')){
+		  upperColInd_[cnt] = i;
+		  cnt++;
+	      }
+	  }
+
+	  assert(cnt == upperDim_);
       }
-   
-      assert(cnt == upperDim_);
+      else{
+	  CoinIotaN(upperColInd_, upperDim_, 0);
+      }
    }
    //numOrigVars_ = lowerDim_ + upperDim_;
 }
@@ -1015,6 +4057,9 @@ MibSModel::setUpperRowData()
 {
 
    //FIXME: MAKE THIS MORE SIMPLE
+
+    std::string stochasticityType(MibSPar_->entry
+				  (MibSParams::stochasticityType));
 
    int lowerRowNum(lowerRowNum_);
    upperRowNum_ = numCons_ - lowerRowNum_;
@@ -1029,15 +4074,24 @@ MibSModel::setUpperRowData()
        upperRowInd_ = new int[upperRowNum_];
    }
 
-   int i(0), cnt(0);
+   int i(0), cnt(0), beg(0), end(0);
 
-   for(i = 0; i < lowerRowNum_ + upperRowNum_; i++){
-       if(!findIndex(i, lowerRowNum, lowerRowInd)){
-	   upperRowInd_[cnt] = i;
-	   cnt++;
+   if(stochasticityType == "deterministic"){
+       for(i = 0; i < lowerRowNum_ + upperRowNum_; i++){
+	   if(!findIndex(i, lowerRowNum, lowerRowInd)){
+	       upperRowInd_[cnt] = i;
+	       cnt++;
+	   }
        }
+       assert(cnt == upperRowNum_);
    }
-   assert(cnt == upperRowNum_);
+   else{
+       beg = lowerRowInd[0];
+       end = beg + lowerRowNum_;
+
+       CoinIotaN(upperRowInd_, beg, 0);
+       CoinIotaN(upperRowInd_ + beg, numCons_ - end, end);
+   }
 
    if(countIteration_ == 0){
        origUpperRowNum_ = upperRowNum_;
@@ -1217,6 +4271,13 @@ MibSModel::setupSelf()
       
    }
    
+   std::string dataFile(AlpsPar_->entry(AlpsParams::instance));
+
+   if((numCols_ == 0) && (dataFile == "NONE")){
+       std::cout << "Error: data file is not specefied. Aborting." << std::endl;
+       abort();
+   }
+
    //------------------------------------------------------
    // Set numIntObjects_, intColIndices_, intObjectIndices_ 
    //------------------------------------------------------
@@ -1837,6 +4898,8 @@ MibSModel::userFeasibleSolution(const double * solution, bool &userFeasible)
   CoinPackedVector *sol = getSolution();
 
   MibSSolution *mibSol = NULL;
+
+  int numScenarios(getNumScenarios());
   
   if(0)
     solver()->writeLp("userfeasible1");
@@ -1846,8 +4909,9 @@ MibSModel::userFeasibleSolution(const double * solution, bool &userFeasible)
   bool isHeurSolution(true);
   int * upperColInd = getUpperColInd();
   int * lowerColInd = getLowerColInd();
-  double * lpSolution = new double[getNumCols()];
-  CoinFillN(lpSolution, getNumCols(), 0.0);
+  double * lpSolution = NULL;
+  //double * lpSolution = new double[getNumCols()];
+  //CoinFillN(lpSolution, getNumCols(), 0.0);
   MibSSolType solType;
   
 
@@ -1873,6 +4937,8 @@ MibSModel::userFeasibleSolution(const double * solution, bool &userFeasible)
   solType = createBilevel(sol);
 
   if(solType != MibSNoSol){
+      lpSolution = new double[getNumCols()];
+      CoinFillN(lpSolution, getNumCols(), 0.0);
       for(i = 0; i < upperDim_; i++){
 	  index = upperColInd[i];
 	  lpSolution[index] = bS_->optUpperSolutionOrd_[i];
@@ -1880,7 +4946,12 @@ MibSModel::userFeasibleSolution(const double * solution, bool &userFeasible)
 	      bS_->optUpperSolutionOrd_[i] * solver()->getObjCoefficients()[index];
       }
       for(i = 0; i < lowerDim_; i++){
-	  index = lowerColInd[i];
+	  if(numScenarios == 1){
+	      index = lowerColInd[i];
+	  }
+	  else{
+	      index = upperDim_ + i;
+	  }
 	  lpSolution[index] = bS_->optLowerSolutionOrd_[i];
 	  upperObj +=
 	      bS_->optLowerSolutionOrd_[i] * solver()->getObjCoefficients()[index];
@@ -1895,11 +4966,12 @@ MibSModel::userFeasibleSolution(const double * solution, bool &userFeasible)
   if(userFeasible == true){
       mibSol = new MibSSolution(getNumCols(),
 				lpSolution,
-				upperObj,
-				this);
+				upperObj, this);
   }
   else if(solType == MibSHeurSol){
-      if(!bS_->isUBSolved_){
+      //in stochastic case, we assume that lower-level variables
+      //do not participate in the upper-level constraints.
+      if((!bS_->isUBSolved_) && (numScenarios == 1)){
 	  isHeurSolution = checkUpperFeasibility(lpSolution);
       }
       if(isHeurSolution == true){
@@ -1913,7 +4985,9 @@ MibSModel::userFeasibleSolution(const double * solution, bool &userFeasible)
   }
 
   delete sol;
-  delete [] lpSolution;
+  if(lpSolution){
+      delete [] lpSolution;
+  }
   return mibSol;
 }
 
@@ -1932,7 +5006,7 @@ MibSModel::checkUpperFeasibility(double * solution)
   const int * matIndices = matrix->getIndices();
   const int * matStarts = matrix->getVectorStarts();
 
-  double lhs(0.0);
+  double lhs(0.0), value(0.0);
   int i(0), j(0), index1(0), index2(0), start(0), end(0);
 
   if(!bS_->isUpperIntegral_){
@@ -1952,6 +5026,21 @@ MibSModel::checkUpperFeasibility(double * solution)
 	      upperFeasible = false;
 	  }
 	  lhs = 0.0;
+      }
+      if((getLColLbInLProb() != NULL) || (getLColUbInLProb() != NULL)){
+	  int lCols(getLowerDim());
+	  int * lColIndices(getLowerColInd());
+	  const double * origColLb(getOrigColLb());
+	  const double * origColUb(getOrigColUb());
+	  for(i = 0; i < lCols; i++){
+	      index1 = lColIndices[i];
+	      value = solution[index1];
+	      if(((origColLb[index1] - value) > etol_)
+		 || ((value - origColUb[index1]) > etol_)){
+		  upperFeasible = false;
+		  break;
+	      }
+	  }
       }
   }
   
@@ -2433,6 +5522,7 @@ CoinPackedVector *
 MibSModel::getSolution()
 {
 
+  int numScenarios(getNumScenarios());
   int varnum = solver()->getNumCols();
   const double *sol = solver()->getColSolution();
   double etol = etol_;
@@ -2459,7 +5549,12 @@ MibSModel::getSolution()
   }
 
   for(i = 0; i < ldim; i++){
-     index = lIndices[i];
+      if(numScenarios == 1){
+	  index = lIndices[i];
+      }
+      else{
+	  index = udim + i;
+      }
     if (sol[index] > etol || sol[index] < -etol){
       indices[cnt] = index;
       values[cnt++] = sol[index];
@@ -2492,27 +5587,38 @@ MibSModel::createBilevel(CoinPackedVector *vec)
 void 
 MibSModel::setBounds()
 {
-
+  std::string stochasticityType(MibSPar_->entry
+				(MibSParams::stochasticityType));
   double * varlower = varLB();
   double * varupper = varUB();
-  double * rowlower = conLB();
-  double * rowupper = conUB();
 
-  int i(0);
+  if(stochasticityType == "deterministic"){
+      double * rowlower = conLB();
+      double * rowupper = conUB();
 
-  origColLb_ = new double[numOrigVars_];
-  origColUb_ = new double[numOrigVars_];
-  origRowLb_ = new double[numOrigCons_];
-  origRowUb_ = new double[numOrigCons_];
+      int i(0);
 
-  for(i = 0; i < numOrigVars_; i++){
-    origColLb_[i] = varlower[i];
-    origColUb_[i] = varupper[i];
+      origColLb_ = new double[numOrigVars_];
+      origColUb_ = new double[numOrigVars_];
+      origRowLb_ = new double[numOrigCons_];
+      origRowUb_ = new double[numOrigCons_];
+
+      for(i = 0; i < numOrigVars_; i++){
+	  origColLb_[i] = varlower[i];
+          origColUb_[i] = varupper[i];
+      }
+
+      for(i = 0; i < numOrigCons_; i++){
+	  origRowLb_[i] = rowlower[i];
+          origRowUb_[i] = rowupper[i];
+      }
   }
-
-  for(i = 0; i < numOrigCons_; i++){
-    origRowLb_[i] = rowlower[i];
-    origRowUb_[i] = rowupper[i];
+  else{
+      int truncNumCols = getUpperDim() + getTruncLowerDim();
+      origColLb_ = new double[truncNumCols];
+      origColUb_ = new double[truncNumCols];
+      CoinDisjointCopyN(varlower, truncNumCols, origColLb_);
+      CoinDisjointCopyN(varupper, truncNumCols, origColUb_);
   }
 
 }
@@ -2974,6 +6080,10 @@ MibSModel::decodeToSelf(AlpsEncoded& encoded)
 void
 MibSModel::setRequiredFixedList(const CoinPackedMatrix *newMatrix)
 {
+    //saharSto: we should change the structure of fixedInd
+    std::string stochasticityType(MibSPar_->entry
+				  (MibSParams::stochasticityType));
+
     int uCols(upperDim_);
     int lRows(lowerRowNum_);
     int * upperColInd = getUpperColInd();
@@ -2983,7 +6093,7 @@ MibSModel::setRequiredFixedList(const CoinPackedMatrix *newMatrix)
     const int * matIndices = newMatrix->getIndices();
     const int * matStarts = newMatrix->getVectorStarts();
 
-    int index1, rowIndex, posRow, start, end;
+    int index1, rowIndex, posRow, start, end, begPos, endPos;
     int i, j;
     int num(0);
 
@@ -2991,18 +6101,39 @@ MibSModel::setRequiredFixedList(const CoinPackedMatrix *newMatrix)
 	fixedInd_ = new int[numVars_]();
     }
 
-    for(i = 0; i < numVars_; i++){
-	fixedInd_[i] = 0;
-	if(binarySearch(0, uCols - 1, i, upperColInd) >= 0){
-	    start = matStarts[i];
-	    end = start + newMatrix->getVectorSize(i);
-	    for(j = start; j < end; j++){
-		rowIndex = matIndices[j];
-		posRow = binarySearch(0, lRows - 1, rowIndex, lowerRowInd);
-		if(posRow >= 0){
-		    fixedInd_[i] = 1;
-		    sizeFixedInd_ ++;
-		    break;
+    if(stochasticityType == "deterministic"){
+	for(i = 0; i < numVars_; i++){
+	    fixedInd_[i] = 0;
+	    if(binarySearch(0, uCols - 1, i, upperColInd) >= 0){
+		start = matStarts[i];
+	        end = start + newMatrix->getVectorSize(i);
+		for(j = start; j < end; j++){
+		    rowIndex = matIndices[j];
+		    posRow = binarySearch(0, lRows - 1, rowIndex, lowerRowInd);
+		    if(posRow >= 0){
+			fixedInd_[i] = 1;
+		        sizeFixedInd_ ++;
+		        break;
+		    }
+		}
+	    }
+	}
+    }
+    else{
+	begPos = lowerRowInd[0];
+	endPos = begPos + lRows - 1;
+	for(i = 0; i < numVars_; i++){
+	    fixedInd_[i] = 0;
+	    if(i < uCols){
+		start = matStarts[i];
+		end = start + newMatrix->getVectorSize(i);
+		for(j = start; j < end; j++){
+		    rowIndex = matIndices[j];
+		    if((begPos <= rowIndex) && (rowIndex <= endPos)){
+			fixedInd_[i] = 1;
+			sizeFixedInd_ ++;
+			break;
+		    }
 		}
 	    }
 	}
@@ -3012,566 +6143,733 @@ MibSModel::setRequiredFixedList(const CoinPackedMatrix *newMatrix)
 
 //#############################################################################
 void                                                                                                                                                       
-MibSModel::instanceStructure(const CoinPackedMatrix *newMatrix, const double* rowLB,
-			     const double* rowUB, const char *rowSense)
+MibSModel::instanceStructure(const CoinPackedMatrix *newMatrix,
+                             const double* rowLB, const double* rowUB,
+                             const char *rowSense)
 {
 
-    bool printProblemInfo(MibSPar_->entry(MibSParams::printProblemInfo));
+   bool printProblemInfo(MibSPar_->entry(MibSParams::printProblemInfo));
     
-    /** Determines the properties of instance **/
-    if(printProblemInfo == true){
-	std::cout<<"======================================="<<std::endl;
-	std::cout<<"             Problem Structure          "<<std::endl;
-	std::cout<<"======================================="<<std::endl;
-        std::cout<<"Number of UL Variables: "<<upperDim_<<std::endl;
-        std::cout<<"Number of LL Variables: "<<lowerDim_<<std::endl;
-        std::cout<<"Number of UL Rows: "<<upperRowNum_<<std::endl;                                                                                         
-        std::cout<<"Number of LL Rows: "<<lowerRowNum_<<std::endl;
+   std::string stochasticityType(MibSPar_->entry
+				(MibSParams::stochasticityType));
+
+   int paramValue(0);
+
+   //set the default value of time limit if it is not set by user
+   //Alps sets the default value of this parameter to a very large value
+   //but it is very large and creats memory issues for setting the time limit
+   //when an extra mip should be solved. So, we set it to a smaller large value.
+   if (AlpsPar()->entry(AlpsParams::timeLimit) > 1.0e200){
+       AlpsPar()->setEntry(AlpsParams::timeLimit, 1.0e200);
+   }
+
+   if(stochasticityType == "stochasticWithoutSAA"){
+       BlisPar()->setEntry(BlisParams::heurStrategy, 0);
+
+       //Param: "MibS_usePreprocessor"
+       paramValue = MibSPar_->entry(MibSParams::usePreprocessor);
+
+       if (paramValue == PARAM_NOTSET){
+	   MibSPar()->setEntry(MibSParams::usePreprocessor, PARAM_OFF);
+       }else if (paramValue == PARAM_ON){
+	   std::cout << "The preprocessor is not currently functional.";
+	   std::cout << std::endl;
+	   MibSPar()->setEntry(MibSParams::usePreprocessor, PARAM_OFF);
+       }
+
+       //Param: MibS heuristics
+       if((MibSPar_->entry(MibSParams::useLowerObjHeuristic) == PARAM_ON) ||
+	  (MibSPar_->entry(MibSParams::useObjCutHeuristic) == PARAM_ON)||
+	  (MibSPar_->entry(MibSParams::useWSHeuristic) == PARAM_ON)||
+	  (MibSPar_->entry(MibSParams::useGreedyHeuristic) == PARAM_ON)){
+	   std::cout << "The heuristics are  not currently functional.";
+	   std::cout << std::endl;
+       }
+       MibSPar()->setEntry(MibSParams::useLowerObjHeuristic, PARAM_OFF);
+       MibSPar()->setEntry(MibSParams::useObjCutHeuristic, PARAM_OFF);
+       MibSPar()->setEntry(MibSParams::useWSHeuristic, PARAM_OFF);
+       MibSPar()->setEntry(MibSParams::useGreedyHeuristic, PARAM_OFF);
+
+
+       if((MibSPar_->entry(MibSParams::useBoundCut) == true) ||
+	  (MibSPar_->entry(MibSParams::useBendersCut) == PARAM_ON) ||
+	  (MibSPar_->entry(MibSParams::useNoGoodCut) == PARAM_ON) ||
+	  (MibSPar_->entry(MibSParams::useGeneralNoGoodCut) == PARAM_ON) ||
+	  (MibSPar_->entry(MibSParams::useTypeIC) == PARAM_ON) ||
+	  (MibSPar_->entry(MibSParams::useTypeWatermelon) == PARAM_ON) ||
+	  (MibSPar_->entry(MibSParams::useTypeTenderIC) == PARAM_ON) ||
+	  (MibSPar_->entry(MibSParams::useTypeHybridIC) == PARAM_ON) ||
+	  (MibSPar_->entry(MibSParams::useIncObjCut) == PARAM_ON) ||
+	  (MibSPar_->entry(MibSParams::usePureIntegerCut) == PARAM_ON)){
+	   throw CoinError("Only hypercube intersection cut is currently functional for the stochastic problems",
+			   "instanceStructure", "MibSModel");
+       }
+
+       if((MibSPar_->entry(MibSParams::useBendersCut) == PARAM_NOTSET) &&
+	  (MibSPar_->entry(MibSParams::useNoGoodCut) == PARAM_NOTSET) &&
+	  (MibSPar_->entry(MibSParams::useGeneralNoGoodCut) == PARAM_NOTSET) &&
+	  (MibSPar_->entry(MibSParams::useTypeIC) == PARAM_NOTSET) &&
+	  (MibSPar_->entry(MibSParams::useTypeWatermelon) == PARAM_NOTSET) &&
+	  (MibSPar_->entry(MibSParams::useTypeTenderIC) == PARAM_NOTSET) &&
+	  (MibSPar_->entry(MibSParams::useTypeHybridIC) == PARAM_NOTSET) &&
+	  (MibSPar_->entry(MibSParams::useIncObjCut) == PARAM_NOTSET) &&
+	  (MibSPar_->entry(MibSParams::usePureIntegerCut) == PARAM_NOTSET)){
+	   MibSPar()->setEntry(MibSParams::useTypeHypercubeIC, PARAM_ON);
+	   if (printProblemInfo == true){
+	       std::cout <<
+		   "Default cut is hypercube intersection cut.";
+	       std::cout << std::endl;
+	   }
+       }
+       else if(MibSPar_->entry(MibSParams::useTypeHypercubeIC) == PARAM_ON){
+	   std::cout << "Hypercub intersection cut generator is on." << std::endl;
+       }
+   
+       //Param: "MibS_branchProcedure"
+       MibSBranchingStrategy branchParSto = static_cast<MibSBranchingStrategy>
+	   (MibSPar_->entry(MibSParams::branchStrategy));
+
+       if (branchParSto == MibSBranchingStrategyNotSet){
+	   MibSPar()->setEntry(MibSParams::branchStrategy,
+			       MibSBranchingStrategyLinking);
+	   if (printProblemInfo == true){
+	       std::cout <<
+		   "Default branching strategy is MibSBranchingStrategyLinking.";
+	       std::cout << std::endl;
+	   }
+       }else if (branchParSto == MibSBranchingStrategyLinking){
+	   std::cout << "Branching strategy is MibSBranchingStrategyLinking.";
+	   std::cout << std::endl;
+       }else{
+	   std::cout << "Branching procedure is MibSBranchingStrategyFractional.";
+           std::cout << std::endl;
+       }
+
+       //Setting parameters of solving (VF) and (UB)
+       int solveSecondLevelWhenXYVarsIntSto(MibSPar_->entry(MibSParams::solveSecondLevelWhenXYVarsInt));
+       int solveSecondLevelWhenXVarsIntSto(MibSPar_->entry(MibSParams::solveSecondLevelWhenXVarsInt));
+       int solveSecondLevelWhenLVarsIntSto(MibSPar_->entry(MibSParams::solveSecondLevelWhenLVarsInt));
+       int solveSecondLevelWhenLVarsFixedSto(MibSPar_->entry(MibSParams::solveSecondLevelWhenLVarsFixed));
+       int computeBestUBWhenXVarsIntSto(MibSPar_->entry(MibSParams::computeBestUBWhenXVarsInt));
+       int computeBestUBWhenLVarsIntSto(MibSPar_->entry(MibSParams::computeBestUBWhenLVarsInt));
+       int computeBestUBWhenLVarsFixedSto(MibSPar_->entry(MibSParams::computeBestUBWhenLVarsFixed));
+   
+
+       if ((solveSecondLevelWhenXYVarsIntSto == PARAM_NOTSET) &&
+	   (solveSecondLevelWhenXVarsIntSto == PARAM_NOTSET) &&
+           (solveSecondLevelWhenLVarsIntSto == PARAM_NOTSET) &&
+           (solveSecondLevelWhenLVarsFixedSto == PARAM_NOTSET) &&
+           (computeBestUBWhenXVarsIntSto == PARAM_NOTSET) &&
+           (computeBestUBWhenLVarsIntSto == PARAM_NOTSET) &&
+           (computeBestUBWhenLVarsFixedSto == PARAM_NOTSET)){
+	   MibSPar()->setEntry(MibSParams::solveSecondLevelWhenXYVarsInt, PARAM_ON);
+           MibSPar()->setEntry(MibSParams::solveSecondLevelWhenLVarsFixed, PARAM_ON);
+           MibSPar()->setEntry(MibSParams::computeBestUBWhenLVarsFixed, PARAM_ON);
+       } 
+
+       if (printProblemInfo == true){
+	   if (MibSPar_->entry(MibSParams::solveSecondLevelWhenXYVarsInt) == PARAM_ON){
+	       std::cout << "solveSecondLevelWhenXYVarsInt is set." << std::endl;
+	   }
+
+           if (MibSPar_->entry(MibSParams::solveSecondLevelWhenXVarsInt) == PARAM_ON){
+	       std::cout << "solveSecondLevelWhenXVarsInt is set." <<std::endl;
+	   }
+
+           if (MibSPar_->entry(MibSParams::solveSecondLevelWhenLVarsInt) == PARAM_ON){
+	       std::cout << "solveSecondLevelWhenLVarsInt is set." <<std::endl;
+	   }
+
+           if (MibSPar_->entry(MibSParams::solveSecondLevelWhenLVarsFixed) == PARAM_ON){
+	       std::cout << "solveSecondLevelWhenLVarsFixed is set." <<std::endl;
+	   }
+
+           if (MibSPar_->entry(MibSParams::computeBestUBWhenXVarsInt) == PARAM_ON){
+	       std::cout << "computeBestUBWhenXVarsInt is set." <<std::endl;
+	   }
+
+           if (MibSPar_->entry(MibSParams::computeBestUBWhenLVarsInt) == PARAM_ON){
+	       std::cout << "computeBestUBWhenLVarsInt is set." <<std::endl;
+	   }
+
+           if (MibSPar_->entry(MibSParams::computeBestUBWhenLVarsFixed) == PARAM_ON){
+	       std::cout << "computeBestUBWhenLVarsFixed is set." <<std::endl;
+	   }
+       }
+
+       //Setting "saveSeenLinkingSols" parameter
+
+       if (MibSPar_->entry(MibSParams::useLinkingSolutionPool) == PARAM_NOTSET){
+	   MibSPar()->setEntry(MibSParams::useLinkingSolutionPool, PARAM_ON);
+       }
+
+       if (printProblemInfo == true){
+	   if(MibSPar_->entry(MibSParams::useLinkingSolutionPool) == PARAM_ON){
+	       std::cout << "Linking solution pool will be used." << std::endl;
+	   }
+           else{
+	       std::cout << "Linking solution pool will not be used." << std::endl;
+	   }
+       }
+       std::cout << std::endl;
+
+       return;
+   }
+
+   
+    
+   /** Determines the properties of instance **/
+   if(printProblemInfo == true){
+      std::cout<<"======================================="<<std::endl;
+      std::cout<<"Analyzing problem structure            "<<std::endl;
+      std::cout<<"======================================="<<std::endl;
+      std::cout << std::endl;
+      std::cout<<"Number of UL Variables: "<<upperDim_<<std::endl;
+      std::cout<<"Number of LL Variables: "<<lowerDim_<<std::endl;
+      std::cout<<"Number of UL Rows: "<<upperRowNum_<<std::endl;
+      std::cout<<"Number of LL Rows: "<<lowerRowNum_<<std::endl;
+   }
+   
+   int i(0),j(0),index(0), mult(0);
+   int numCols(numVars_);
+   int numRows(numCons_);
+   int uCols(upperDim_);
+   int lCols(lowerDim_);
+   int uRows(upperRowNum_);
+   int lRows(lowerRowNum_);
+   int numUpperInt(0);
+   int numLowerInt(0);
+   int * uColIndices = getUpperColInd();         
+   int * lColIndices = getLowerColInd();
+   int * lRowIndices = getLowerRowInd();
+   char * newRowSense = new char[numRows];
+   
+   if (isInterdict_ == false){
+      for(i = 0; i < uCols; i++){
+         index = uColIndices[i];
+         if (colType_[index] != 'C'){
+            numUpperInt ++;
+         }
+      }
+      if (printProblemInfo == true){
+         std::cout <<"Number of integer UL Variables: ";
+         std::cout << numUpperInt << std::endl;
+      }
+      for (i = 0; i < lCols; i++){
+         index = lColIndices[i];
+         if (colType_[index] != 'C'){
+            numLowerInt++;
+         }
+      }
+      if (printProblemInfo == true){
+         std::cout <<"Number of integer LL Variables: ";
+         std::cout << numLowerInt << std::endl;
+      }
+   }
+   
+   
+   if (isInterdict_ == false){
+      CoinDisjointCopyN(rowSense, numRows, newRowSense);
+   }else{
+      for (i = 0; i < numRows; i++){
+         newRowSense[i] = 'L';
+      }
+      for (i = 0; i < lRows-lCols; i++){
+         newRowSense[i+uRows] = rowSense[i];
+      }
+   }
+   
+   //Checks general or interdiction 
+   if (isInterdict_ == true){
+      if (printProblemInfo == true){
+         std::cout << "This instance is an interdiction problem." << std::endl;
+      }
+   }
+   
+   //Checks type of variables
+   if (isInterdict_ == false){
+      for (i = 0; i < numCols; i++){
+         if (colType_[i] == 'C'){
+            isPureInteger_ = false;
+            break;
+         }
+      }
+      
+      for (i = 0; i < numCols; i++){
+         if (colType_[i] != 'B'){
+            if (binarySearch(0, lCols - 1, i, lColIndices) < 0){
+               if(fixedInd_[i] == 1){
+                  allLinkingBin_ = false;
+               }
+               allUpperBin_ = false;
+            }
+            else{
+               allLowerBin_ = false;
+            }
+            if ((!allUpperBin_) && (!allLowerBin_) && (!allLinkingBin_)){
+               break;
+            }
+         }
+      }
+   }
+   
+   if (printProblemInfo == true){
+      if (isPureInteger_ == true){
+         std::cout << "This instance is a pure integer problem." << std::endl;
+      }
+      else{
+         std::cout << "This instance is a mixed integer problem." << std::endl;
+      }
+      
+      if (allUpperBin_ == true){
+         std::cout << "All upper level variables are binary." << std::endl;
+      }
+      
+      if (allLowerBin_ == true){
+         std::cout << "All lower level variables are binary." << std::endl; 
+      }
+   }
+   
+   int nonZero (newMatrix->getNumElements());
+   int counterStart, counterEnd;
+   int rowIndex, posRow, posCol;
+   double rhs(0.0);
+   
+   const double * matElements = newMatrix->getElements();
+   const int * matIndices = newMatrix->getIndices();           
+   const int * matStarts = newMatrix->getVectorStarts();
+   //Signs of matrices A1, A2, G1 and G2 are determined
+   //based on converting the row senses to 'L'.  
+   for (i = 0; i < numCols; i++){
+      counterStart = matStarts[i];
+      counterEnd = matStarts[i+1];
+      for (j = counterStart; j < counterEnd; j++){                          
+         rowIndex = matIndices[j];
+         if(newRowSense[rowIndex] == 'L'){
+            mult = 1;
+         }
+         else{
+            mult = -1;
+         }
+         posRow = binarySearch(0, lRows - 1, rowIndex, lRowIndices);       
+         posCol = binarySearch(0, lCols - 1, i, lColIndices);
+         if ((fabs(matElements[j] - floor(matElements[j])) > etol_) &&
+            (fabs(matElements[j] - ceil(matElements[j])) > etol_)){
+            if (posRow < 0){
+               isUpperCoeffInt_ = false;
+            }else{
+               isLowerCoeffInt_ = false;
+            }
+         }
+         if (mult * matElements[j] < -etol_){
+            if (posRow < 0){
+               if (posCol < 0){
+                  positiveA1_ = false;
+               }  
+               else{
+                  positiveG1_ = false;
+               }  
+            }else{  
+               if (posCol < 0){
+                  positiveA2_ = false;
+               }else{
+                  positiveG2_ = false;
+               }
+            }
+         }
+      }
+    }
+
+    if ((isUpperCoeffInt_ == true) || (isLowerCoeffInt_ == true)){
+       for (i = 0; i < numRows; i++){
+          switch(newRowSense[i]){
+           case 'L':
+             rhs = rowUB[i];
+             break;
+           case 'G':
+             rhs = rowLB[i];
+             break;
+           case 'E':
+             std::cout << "MibS cannot currently handle equality constraints.";
+             std::cout << std::endl; 
+             abort();
+             break;
+           case 'R':
+             std::cout << "MibS cannot currently handle range constraints.";
+             std::cout << std::endl;
+             abort();
+             break;
+          }
+          if ((fabs(rhs - floor(rhs)) > etol_) &&
+              (fabs(rhs - ceil(rhs)) > etol_)){
+             posRow = binarySearch(0, lRows - 1, rowIndex, lRowIndices);
+             if (posRow < 0){
+                isUpperCoeffInt_ = false;
+             }else{
+                isLowerCoeffInt_ = false;
+             }
+          }
+       }
     }
     
-    int i(0),j(0),index(0), mult(0);
-    int numCols(numVars_);
-    int numRows(numCons_);
-    int uCols(upperDim_);
-    int lCols(lowerDim_);
-    int uRows(upperRowNum_);
-    int lRows(lowerRowNum_);
-    int numUpperInt(0);
-    int numLowerInt(0);
-    int * uColIndices = getUpperColInd();         
-    int * lColIndices = getLowerColInd();
-    int * lRowIndices = getLowerRowInd();
-    char * newRowSense = new char[numRows];
-
-    if (isInterdict_ == false){
-	for(i = 0; i < uCols; i++){
-	    index = uColIndices[i];
-	    if(colType_[index] != 'C'){
-		numUpperInt ++;
-	    }
-	}
-	if(printProblemInfo == true){
-	    std::cout <<"Number of integer UL Variables: " << numUpperInt << std::endl;
-	}
-	for(i = 0; i < lCols; i++){
-	    index = lColIndices[i];
-	    if(colType_[index] != 'C'){
-		numLowerInt++;
-	    }
-	}
-	if(printProblemInfo == true){
-	    std::cout <<"Number of integer LL Variables: " << numLowerInt << std::endl;
-	}
+    for (i = 0; i < numCols; i++){
+       if (fixedInd_[i] == 1){
+          if (colType_[i] == 'C'){
+             std::cout << "All linking variables should be discrete";
+             std::cout << std::endl;
+             i = -1;
+             assert(i > 0);
+          }
+       }
     }
 
-
-    if (isInterdict_ == false){
-	CoinDisjointCopyN(rowSense, numRows, newRowSense);
-    }
-    else{
-	for(i = 0; i < numRows; i++){
-	    newRowSense[i] = 'L';
-	}
-	for(i = 0; i < lRows-lCols; i++){
-	    newRowSense[i+uRows] = rowSense[i];
-	}
-    }
-    
-    //Checks general or interdiction 
-    if(isInterdict_ == true){
-	if(printProblemInfo == true){
-	    std::cout << "This instance is an interdiction bilevel optimization problem." << std::endl;
-	}
+    if (printProblemInfo == true){
+       if (positiveA1_ == true){
+          std::cout << "Coefficient matrix of upper level variables in upper level problem is non-negative." << std::endl;
+       }
+       
+       if (positiveG1_ == true){
+          std::cout << "Coefficient matrix of lower level variables in upper level problem is non-negative." << std::endl;
+       }
+       
+       if (positiveA2_ == true){
+          std::cout << "Coefficient matrix of upper level variables in lower level problem is non-negative." << std::endl;
+       }
+       
+       if (positiveG2_ == true){
+          std::cout << "Coefficient matrix of lower level variables in upper level problem is non-negative." << std::endl;
+       }
     }
 
-    //Checks type of variables
-    if(isInterdict_ == false){
-	for(i = 0; i < numCols; i++){
-	    if(colType_[i] == 'C'){
-		isPureInteger_ = false;
-		break;
-	    }
-	}
-
-	for(i = 0; i < numCols; i++){
-	    if (colType_[i] != 'B'){
-		if(binarySearch(0, lCols - 1, i, lColIndices) < 0){
-		    if(fixedInd_[i] == 1){
-			allLinkingBin_ = false;
-		    }
-		    allUpperBin_ = false;
-		}
-		else{
-		    allLowerBin_ = false;
-		}
-		if((!allUpperBin_) && (!allLowerBin_) && (!allLinkingBin_)){
-		    break;
-		}
-	    }
-	}
-    }
-
-    if(printProblemInfo == true){
-	if(isPureInteger_ == true){
-	    std::cout << "This instance is a pure integer bilevel optimization problem" << std::endl;
-	}
-	else{
-	    std::cout << "This instance is a mixed_integer bilevel optimization problem" << std::endl;
-	}
-    
-        if(allUpperBin_ == true){
-	    std::cout << "All of UL varibles are binary." << std::endl;
-	}
-    
-        if(allLowerBin_ == true){
-	    std::cout << "All of LL varibles are binary." << std::endl; 
-	}
-    }
-    
-    int nonZero (newMatrix->getNumElements());
-    int counterStart, counterEnd;
-    int rowIndex, posRow, posCol;
-    double rhs(0.0);
-    
-    const double * matElements = newMatrix->getElements();
-    const int * matIndices = newMatrix->getIndices();           
-    const int * matStarts = newMatrix->getVectorStarts();
-    //Signs of matrices A1, A2, G1 and G2 are determined
-    //based on converting the row senses to 'L'.  
-    for(i = 0; i < numCols; i++){
-        counterStart = matStarts[i];
-        counterEnd = matStarts[i+1];
-        for(j = counterStart; j < counterEnd; j++){                                                                  
-	    rowIndex = matIndices[j];
-	    if(newRowSense[rowIndex] == 'L'){
-		mult = 1;
-	    }
-	    else{
-		mult = -1;
-	    }
-	    posRow = binarySearch(0, lRows - 1, rowIndex, lRowIndices);       
-	    posCol = binarySearch(0, lCols - 1, i, lColIndices);
-	    if((fabs(matElements[j] - floor(matElements[j])) > etol_) &&
-	       (fabs(matElements[j] - ceil(matElements[j])) > etol_)){
-		if(posRow < 0){
-		    isUpperCoeffInt_ = false;
-		}
-		else{
-		    isLowerCoeffInt_ = false;
-		}
-	    }
-	    if(mult * matElements[j] < -etol_){
-		if(posRow < 0){
-		    if(posCol < 0){
-			positiveA1_ = false;
-		    }  
-		    else{
-                        positiveG1_ = false;
-                    }  
-                }   
-                else{  
-                    if(posCol < 0){
-                        positiveA2_ = false;
-                    }  
-                    else{
-                        positiveG2_ = false;                                                                                                               
-                    }
-		}
-	    }
-	}
-    }
-
-    if((isUpperCoeffInt_ == true) || (isLowerCoeffInt_ == true)){
-	for(i = 0; i < numRows; i++){
-	    switch(newRowSense[i]){
-	    case 'L':
-		rhs = rowUB[i];
-		break;
-	    case 'G':
-		rhs = rowLB[i];
-		break;
-	    case 'E':
-		std::cout
-		    << "MibS cannot currently handle equality constraints." << std::endl;
-		abort();
-		break;
-	    case 'R':
-		std::cout
-		    << "MibS cannot currently handle range constraints." << std::endl;
-		abort();
-		break;
-	    }
-	    if((fabs(rhs - floor(rhs)) > etol_) &&
-	       (fabs(rhs - ceil(rhs)) > etol_)){
-		posRow = binarySearch(0, lRows - 1, rowIndex, lRowIndices);
-		if(posRow < 0){
-		    isUpperCoeffInt_ = false;
-		}
-		else{
-		    isLowerCoeffInt_ = false;
-		}
-	    }
-	}
-    }
-
-    for(i = 0; i < numCols; i++){
-	if(fixedInd_[i] == 1){
-	    if(colType_[i] == 'C'){
-		std::cout << "All linking variables should be discrete" << std::endl;
-		i = -1;
-		assert(i > 0);
-	    }
-	}
-    }
-
-    if(printProblemInfo == true){
-	if(positiveA1_ == true){
-	    std::cout << "Matrix A1 is positive." << std::endl;
-	}
-    
-        if(positiveG1_ == true){
-	    std::cout << "Matrix G1 is positive." << std::endl;
-	}
-    
-        if(positiveA2_ == true){
-	    std::cout << "Matrix A2 is positive." << std::endl;
-	}
-
-	if(positiveG2_ == true){
-	    std::cout << "Matrix G2 is positive." << std::endl;
-	}
-    }
-
-    //set the default value of time limit if it is not set by user
-    //Alps sets the default value of this parameter to a very large value
-    //but it is very large and creats memory issues for setting the time limit
-    //when an extra mip should be solved. So, we set it to a smaller large value.
-    if(AlpsPar()->entry(AlpsParams::timeLimit) > 1.0e200){
-	AlpsPar()->setEntry(AlpsParams::timeLimit, 1.0e200);
-    }
-    
-    int paramValue(0);
-    MibSIntersectionCutType cutType(MibSIntersectionCutTypeNotSet);
+    std::cout << std::endl;
+    std::cout << "=======================================" <<std::endl;
+    std::cout << "Setting parameters                     " <<std::endl;
+    std::cout << "=======================================" <<std::endl;
+    std::cout << std::endl;
+   
+   
+    //MibSIntersectionCutType cutType(MibSIntersectionCutTypeNotSet);
     //bool isHypercubeOn(false);
-
+    
     bool turnOffOtherCuts(MibSPar_->entry(MibSParams::turnOffOtherCuts));
     bool defaultCutIsOn(false);
-
+    
     /*//Check if hypercube IC is on or off
-    paramValue = MibSPar_->entry(MibSParams::useIntersectionCut);
-    cutType =  MibSPar_->entry(MibSParams::intersectionCutType);
-
-    if((paramValue == PARAM_ON) && (cutType == 2)){
-	isHypercubeOn = true;
-    }*/
+      paramValue = MibSPar_->entry(MibSParams::useIntersectionCut);
+      cutType =  MibSPar_->entry(MibSParams::intersectionCutType);
+      
+      if((paramValue == PARAM_ON) && (cutType == 2)){
+      isHypercubeOn = true;
+      }*/
+   
     
     //Param: "MibS_usePreprocessor" 
     paramValue = MibSPar_->entry(MibSParams::usePreprocessor);
     
-    if(paramValue == PARAM_NOTSET)
-	MibSPar()->setEntry(MibSParams::usePreprocessor, PARAM_OFF);
-    else if(paramValue == PARAM_ON){
-	std::cout << "The preprocessor is not currently functional. Automatically disabling your parameter choice." << std::endl;
-	MibSPar()->setEntry(MibSParams::usePreprocessor, PARAM_OFF);
+    if (paramValue == PARAM_NOTSET){
+       MibSPar()->setEntry(MibSParams::usePreprocessor, PARAM_OFF);
+    }else if (paramValue == PARAM_ON){
+       std::cout << "The preprocessor is not currently functional.";
+       std::cout << std::endl;
+       MibSPar()->setEntry(MibSParams::usePreprocessor, PARAM_OFF);
     }
-
+    
     //Param: "MibS_useGreedyHeuristic"
     paramValue = MibSPar_->entry(MibSParams::useGreedyHeuristic);
-
-    if(paramValue == PARAM_NOTSET)
-	MibSPar()->setEntry(MibSParams::useGreedyHeuristic, PARAM_OFF);
-    else if(paramValue == PARAM_ON){
-	if(isInterdict_ == false){
-	    MibSPar()->setEntry(MibSParams::useGreedyHeuristic, PARAM_OFF);
-	    std::cout << "This heuristic only works for interdiction problems. Automatically disabling this heuristic." << std::endl;
-	}
+    
+    if (paramValue == PARAM_NOTSET){
+       MibSPar()->setEntry(MibSParams::useGreedyHeuristic, PARAM_OFF);
+    }else if (paramValue == PARAM_ON){
+       if (isInterdict_ == false){
+          MibSPar()->setEntry(MibSParams::useGreedyHeuristic, PARAM_OFF);
+          std::cout << "Greedy heuristic only works for interdiction problems.";
+          std::cout << std::endl; 
+       }
     }
-
+    
     //Param: "MibS_useIncObjCut"
-    if((turnOffOtherCuts == true) &&
-       (MibSPar_->entry(MibSParams::useIncObjCut) == PARAM_NOTSET)){
-	MibSPar()->setEntry(MibSParams::useIncObjCut, PARAM_OFF);
+    if ((turnOffOtherCuts == true) &&
+        (MibSPar_->entry(MibSParams::useIncObjCut) == PARAM_NOTSET)){
+       MibSPar()->setEntry(MibSParams::useIncObjCut, PARAM_OFF);
     }
     
     paramValue = MibSPar_->entry(MibSParams::useIncObjCut);
-
-    if(paramValue == PARAM_NOTSET)
+    
+    if (paramValue == PARAM_NOTSET){
 	MibSPar()->setEntry(MibSParams::useIncObjCut, PARAM_OFF);
-    else if(paramValue == PARAM_ON){
-	if((allLinkingBin_ == false) || (positiveA2_ == false)){
-	    std::cout << "The increasing objective cut is not valid for this problem. Automatically disabling this cut." << std::endl;
-	    MibSPar()->setEntry(MibSParams::useIncObjCut, PARAM_OFF);
-	}
+    }else if (paramValue == PARAM_ON){
+       if ((allLinkingBin_ == false) || (positiveA2_ == false)){
+          std::cout << "The increasing objective cut is not valid for this problem.";
+          std::cout << std::endl;
+          MibSPar()->setEntry(MibSParams::useIncObjCut, PARAM_OFF);
+       }
     }
-
+    
     //Param: "MibS_useInterSectionCut" (MibSIntersectionCutTypeIC)
-    paramValue = MibSPar_->entry(MibSParams::useIntersectionCut);
-    cutType = static_cast<MibSIntersectionCutType>
-	(MibSPar_->entry(MibSParams::intersectionCutType));
-
-    if((paramValue == PARAM_ON) && (cutType == MibSIntersectionCutTypeIC)){
-	if((isPureInteger_ == false) || (isLowerCoeffInt_ == false)){
-	    std::cout << "The intersection cut IC is not valid problem.  Automatically disabling this cut."
-		      << std::endl;
+    paramValue = MibSPar_->entry(MibSParams::useTypeIC);
+    //cutType = static_cast<MibSIntersectionCutType>
+    //	(MibSPar_->entry(MibSParams::intersectionCutType));
+    
+    if (paramValue == PARAM_NOTSET){
+       MibSPar()->setEntry(MibSParams::useTypeIC, PARAM_OFF);
+    }else if (paramValue == PARAM_ON){
+       if ((isPureInteger_ == false) || (isLowerCoeffInt_ == false)){
+          std::cout << "The intersection cut IC is not valid for this problem.";
+          std::cout << std::endl;
+          MibSPar()->setEntry(MibSParams::useTypeIC, PARAM_OFF);
+       }
+    }
+    /*if((paramValue == PARAM_ON) && (cutType == MibSIntersectionCutTypeIC)){
+      if((isPureInteger_ == false) || (isLowerCoeffInt_ == false)){
+	    std::cout << "The intersection cut IC is not valid problem.";
+	    std::cout << std::endl;
 	    MibSPar()->setEntry(MibSParams::useIntersectionCut, PARAM_NOTSET);
 	}
-    }    
+    }*/    
 
     //Param: "MibS_useNoGoodCut"
     paramValue = MibSPar_->entry(MibSParams::useNoGoodCut);
 
-    if(paramValue == PARAM_NOTSET){
+    if (paramValue == PARAM_NOTSET){
 	MibSPar()->setEntry(MibSParams::useNoGoodCut, PARAM_OFF);
-    }
-    else if((paramValue == PARAM_ON) && (allUpperBin_ == false)){
-	std::cout << "The no-good cut is not valid for this problem. Automatically disabling this cut." << std::endl;
-	MibSPar()->setEntry(MibSParams::useNoGoodCut, PARAM_OFF);
+    } else if ((paramValue == PARAM_ON) && (allUpperBin_ == false)){
+       std::cout << "The no-good cut is not valid for this problem.";
+       std::cout << std::endl;
+       MibSPar()->setEntry(MibSParams::useNoGoodCut, PARAM_OFF);
     }
 
     //Param: "MibS_useBendersCut"
-    if((turnOffOtherCuts == true) &&
-       (MibSPar_->entry(MibSParams::useBendersCut) == PARAM_NOTSET)){
-	MibSPar()->setEntry(MibSParams::useBendersCut, PARAM_OFF);
+    if ((turnOffOtherCuts == true) &&
+        (MibSPar_->entry(MibSParams::useBendersCut) == PARAM_NOTSET)){
+       MibSPar()->setEntry(MibSParams::useBendersCut, PARAM_OFF);
     }
     
     paramValue = MibSPar_->entry(MibSParams::useBendersCut);
 
-    if(paramValue == PARAM_NOTSET){
-	if((isInterdict_ == false) || (positiveG2_ == false)){
+    if (paramValue == PARAM_NOTSET){
+	if ((isInterdict_ == false) || (positiveG2_ == false)){
 	    MibSPar()->setEntry(MibSParams::useBendersCut, PARAM_OFF);
 	}else{
 	    MibSPar()->setEntry(MibSParams::useBendersCut, PARAM_ON);
-	    MibSPar()->setEntry(MibSParams::bendersCutType, MibSBendersCutTypeJustOneCut);
+	    MibSPar()->setEntry(MibSParams::bendersCutType,
+                                MibSBendersCutTypeJustOneCut);
 	}
     }
-    else if(paramValue == PARAM_ON){
-	if((isInterdict_ == false) || (positiveG2_ == false)){
-	    std::cout << "The benders cut is not valid for this problem. Automatically disabling this cut." << std::endl;
-	    MibSPar()->setEntry(MibSParams::useBendersCut, PARAM_OFF);
+    else if (paramValue == PARAM_ON){
+	if ((isInterdict_ == false) || (positiveG2_ == false)){
+           std::cout << "The Benders cut is not valid for this problem.";
+           std::cout << std::endl;
+           MibSPar()->setEntry(MibSParams::useBendersCut, PARAM_OFF);
 	}
     }
-    if(MibSPar_->entry(MibSParams::useBendersCut) == PARAM_ON){
-	    defaultCutIsOn = true;
-	}
+    if (MibSPar_->entry(MibSParams::useBendersCut) == PARAM_ON){
+       defaultCutIsOn = true;
+    }
 
     //Param: "MibS_useGeneralNoGoodCut"
-    if((turnOffOtherCuts == true) &&
-       (MibSPar_->entry(MibSParams::useNoGoodCut) == PARAM_NOTSET)){
-	MibSPar()->setEntry(MibSParams::useGeneralNoGoodCut, PARAM_OFF);
+    if ((turnOffOtherCuts == true) &&
+        (MibSPar_->entry(MibSParams::useNoGoodCut) == PARAM_NOTSET)){
+       MibSPar()->setEntry(MibSParams::useGeneralNoGoodCut, PARAM_OFF);
     }
     
     paramValue = MibSPar_->entry(MibSParams::useGeneralNoGoodCut);
 
-    if(paramValue == PARAM_NOTSET){
-	if(allLinkingBin_ == false){
-	    MibSPar()->setEntry(MibSParams::useGeneralNoGoodCut, PARAM_OFF);
-	}
-	else if(defaultCutIsOn == false){
-	    MibSPar()->setEntry(MibSParams::useGeneralNoGoodCut, PARAM_ON);
-	}
+    if (paramValue == PARAM_NOTSET){
+       if (allLinkingBin_ == false){
+          MibSPar()->setEntry(MibSParams::useGeneralNoGoodCut, PARAM_OFF);
+       }else if (defaultCutIsOn == false){
+          MibSPar()->setEntry(MibSParams::useGeneralNoGoodCut, PARAM_ON);
+       }
+    }else if ((paramValue == PARAM_ON) && (allLinkingBin_ == false)){
+       std::cout << "Generalized no-good cut is not valid for this problem.";
+       std::cout << std::endl;
+       MibSPar()->setEntry(MibSParams::useGeneralNoGoodCut, PARAM_OFF);
     }
-    else if((paramValue == PARAM_ON) && (allLinkingBin_ == false)){
-	std::cout << "Generalized no-good cut is not valid for this problem. Automatically disabling this cut." << std::endl;
-	MibSPar()->setEntry(MibSParams::useGeneralNoGoodCut, PARAM_OFF);
+    if (MibSPar_->entry(MibSParams::useGeneralNoGoodCut) == PARAM_ON){
+       defaultCutIsOn = true;
     }
-    if(MibSPar_->entry(MibSParams::useGeneralNoGoodCut) == PARAM_ON){
-	defaultCutIsOn = true;
-    }
-
+    
     //Param: "MibS_usePureIntegerCut"
-    if((turnOffOtherCuts == true) &&
-       (MibSPar_->entry(MibSParams::usePureIntegerCut) == PARAM_NOTSET)){
-	MibSPar()->setEntry(MibSParams::usePureIntegerCut, PARAM_OFF);
+    if ((turnOffOtherCuts == true) &&
+        (MibSPar_->entry(MibSParams::usePureIntegerCut) == PARAM_NOTSET)){
+       MibSPar()->setEntry(MibSParams::usePureIntegerCut, PARAM_OFF);
     }
     
     paramValue = MibSPar_->entry(MibSParams::usePureIntegerCut);
 
-    if(paramValue == PARAM_NOTSET){
-	if((isPureInteger_ == false) || (isUpperCoeffInt_ == false)
-	   || (isLowerCoeffInt_ == false)){
-	    MibSPar()->setEntry(MibSParams::usePureIntegerCut, PARAM_OFF);
-	}
-	else if(defaultCutIsOn == false){
-	    MibSPar()->setEntry(MibSParams::usePureIntegerCut, PARAM_ON);
-	}
+    if (paramValue == PARAM_NOTSET){
+       if ((isPureInteger_ == false) || (isUpperCoeffInt_ == false)
+           || (isLowerCoeffInt_ == false)){
+          MibSPar()->setEntry(MibSParams::usePureIntegerCut, PARAM_OFF);
+       }else if (defaultCutIsOn == false){
+          MibSPar()->setEntry(MibSParams::usePureIntegerCut, PARAM_ON);
+       }
+    }else if((paramValue == PARAM_ON) &&
+             ((isPureInteger_ == false) ||
+              (isUpperCoeffInt_ == false) ||
+              (isLowerCoeffInt_ == false))){
+       std::cout << "The pure integer cut is not valid for this problem.";
+       std::cout << std::endl;
+       MibSPar()->setEntry(MibSParams::usePureIntegerCut, PARAM_OFF);
     }
-    else if((paramValue == PARAM_ON) && ((isPureInteger_ == false) || (isUpperCoeffInt_ == false)
-					 || (isLowerCoeffInt_ == false))){
-	std::cout << "The pure integer cut is not valid for this problem. Automatically disabling this cut." << std::endl;
-	MibSPar()->setEntry(MibSParams::usePureIntegerCut, PARAM_OFF);
-    }
-    if(MibSPar_->entry(MibSParams::usePureIntegerCut) == PARAM_ON){
+    if (MibSPar_->entry(MibSParams::usePureIntegerCut) == PARAM_ON){
 	defaultCutIsOn = true;
     }
 
     //Param: "MibS_useInterSectionCut" (MibSIntersectionCutTypeHypercubeIC) 
-    if((turnOffOtherCuts == true) &&
-       (MibSPar_->entry(MibSParams::useIntersectionCut) == PARAM_NOTSET)){
-	MibSPar()->setEntry(MibSParams::useIntersectionCut, PARAM_OFF);
+    if ((turnOffOtherCuts == true) &&
+        (MibSPar_->entry(MibSParams::useTypeHypercubeIC) == PARAM_NOTSET)){
+       MibSPar()->setEntry(MibSParams::useTypeHypercubeIC, PARAM_OFF);
     }
     
-    paramValue = MibSPar_->entry(MibSParams::useIntersectionCut);
-
-    if(paramValue == PARAM_NOTSET){
+    paramValue = MibSPar_->entry(MibSParams::useTypeHypercubeIC);
+    
+    if (paramValue == PARAM_NOTSET){
 	if(defaultCutIsOn == false){
-	    MibSPar()->setEntry(MibSParams::useIntersectionCut, PARAM_ON);
-	    MibSPar()->setEntry(MibSParams::intersectionCutType,
-				MibSIntersectionCutTypeHypercubeIC);
+           MibSPar()->setEntry(MibSParams::useTypeHypercubeIC, PARAM_ON);
+           /*MibSPar()->setEntry(MibSParams::intersectionCutType,
+             MibSIntersectionCutTypeHypercubeIC);*/
 	}
     }
     
     //Param: "MibS_branchProcedure"
     MibSBranchingStrategy branchPar = static_cast<MibSBranchingStrategy>
 	  (MibSPar_->entry(MibSParams::branchStrategy));
-    if(branchPar == MibSBranchingStrategyNotSet){
-	if((isInterdict_ == true) || (numUpperInt <= numLowerInt)){
-	    MibSPar()->setEntry(MibSParams::branchStrategy,
-				MibSBranchingStrategyLinking);
-	    if(printProblemInfo == true){
-		std::cout <<
-		    "Since no branching procedure is selected, it is set to 'MibSBranchingStrategyLinking' automatically."
-			  << std::endl;
-	    }
-	}
-	else{
-	    MibSPar()->setEntry(MibSParams::branchStrategy,
-				MibSBranchingStrategyFractional);
-	    if(printProblemInfo == true){
-		std::cout <<
-		    "Since no branching procedure is selected, it is set to 'MibSBranchingStrategyFractional' automatically."
-			  << std::endl;
-	    }
-	}
+    if (branchPar == MibSBranchingStrategyNotSet){
+       if ((isInterdict_ == true) || (numUpperInt <= numLowerInt)){
+          MibSPar()->setEntry(MibSParams::branchStrategy,
+                              MibSBranchingStrategyLinking);
+          if (printProblemInfo == true){
+             std::cout <<
+                "Default branching strategy is MibSBranchingStrategyLinking.";
+             std::cout << std::endl;
+          }
+       }else{
+          MibSPar()->setEntry(MibSParams::branchStrategy,
+                              MibSBranchingStrategyFractional);
+          if (printProblemInfo == true){
+             std::cout <<
+                "Default branching strategy is MibSBranchingStrategyFractional.";
+             std::cout << std::endl;
+          }
+       }
+    }else if (MibSPar_->entry(MibSParams::branchStrategy) ==
+              MibSBranchingStrategyLinking){
+       std::cout << "Branching strategy is MibSBranchingStrategyLinking.";
+       std::cout << std::endl;
+    }else{
+       std::cout << "Branching procedure is MibSBranchingStrategyFractional.";
+       std::cout << std::endl;
     }
 
-
-    if(printProblemInfo == true){
+    if (printProblemInfo == true){
 	if(MibSPar_->entry(MibSParams::useIncObjCut) == PARAM_ON){
-	    std::cout << "'Increasing objective cut' genertor is on." << std::endl;
+           std::cout << "Increasing objective cut generator is on.";
+           std::cout << std::endl;
 	}
 
-	if(MibSPar_->entry(MibSParams::useBendersCut) == PARAM_ON){
-	    if(MibSPar_->entry(MibSParams::bendersCutType) ==
-	       MibSBendersCutTypeJustOneCut){
-		std::cout << "'Benders cut' genertor (just one cut) is on." << std::endl;
-	    }
-	    else{
-		std::cout << "'Benders cut' genertor (multiple cuts) is on." << std::endl;
-	    }
+	if (MibSPar_->entry(MibSParams::useBendersCut) == PARAM_ON){
+           if (MibSPar_->entry(MibSParams::bendersCutType) ==
+               MibSBendersCutTypeJustOneCut){
+              std::cout << "Benders cut generator (just one cut) is on.";
+              std::cout << std::endl;
+           }else{
+              std::cout << "Benders cut generator (multiple cuts) is on.";
+              std::cout << std::endl;
+           }
+	}
+        
+        if (MibSPar_->entry(MibSParams::usePureIntegerCut) == PARAM_ON){
+           std::cout << "Pure integer cut generator is on."<< std::endl;
+	}
+        
+	if (MibSPar_->entry(MibSParams::useNoGoodCut) == PARAM_ON){
+           std::cout << "No-good cut generator is on."<< std::endl;
 	}
 
-        if(MibSPar_->entry(MibSParams::usePureIntegerCut) == PARAM_ON){
-	    std::cout << "'Pure integer cut' genertor is on."<< std::endl;
+	if (MibSPar_->entry(MibSParams::useGeneralNoGoodCut) == PARAM_ON){
+           std::cout << "Generalized no-good cut generator is on."<< std::endl;
 	}
 
-	if(MibSPar_->entry(MibSParams::useNoGoodCut) == PARAM_ON){
-	    std::cout << "'No-good cut' genertor is on."<< std::endl;
+        //if(MibSPar_->entry(MibSParams::useIntersectionCut) == PARAM_ON){
+	if (MibSPar_->entry(MibSParams::useTypeIC) == PARAM_ON){
+           std::cout << "Intersection cut IC generator is on." << std::endl;
 	}
-
-	if(MibSPar_->entry(MibSParams::useGeneralNoGoodCut) == PARAM_ON){
-	    std::cout << "'Generalized no-good cut' genertor is on."<< std::endl;
+	if (MibSPar_->entry(MibSParams::useTypeWatermelon) == PARAM_ON){
+           std::cout << "watermelon IC generator is on." << std::endl;
 	}
-
-        if(MibSPar_->entry(MibSParams::useIntersectionCut) == PARAM_ON){
-	    if(MibSPar_->entry(MibSParams::intersectionCutType) ==
-	       MibSIntersectionCutTypeIC){
-		std::cout << "'Intersection cut IC' generator is on." << std::endl;
-	    }
-	    if(MibSPar_->entry(MibSParams::intersectionCutType) ==
-	       MibSIntersectionCutTypeWatermelon){
-		std::cout << "'watermelon IC' generator is on." << std::endl;
-	    }
-	    if(MibSPar_->entry(MibSParams::intersectionCutType) ==
-	       MibSIntersectionCutTypeHypercubeIC){
-		std::cout << "'hypercube IC' generator is on." << std::endl;
-	    }
+	if (MibSPar_->entry(MibSParams::useTypeHypercubeIC) == PARAM_ON){
+           std::cout << "hypercube IC generator is on." << std::endl;
 	}
-
-        if(MibSPar_->entry(MibSParams::branchStrategy) ==
-	   MibSBranchingStrategyLinking){
-	    std::cout << "Branching procedure is set to 'MibSBranchingStrategyLinking'."
-		      << std::endl;
-	}
-	else if(MibSPar_->entry(MibSParams::branchStrategy) ==
-		MibSBranchingStrategyFractional){
-	    std::cout << "Branching procedure is set to 'MibSBranchingStrategyFractional'."
-		      << std::endl;
-	}
+        //}
     }
 	
     //Setting parameters of solving (VF) and (UB)
-    int solveSecondLevelWhenXYVarsInt(MibSPar_->entry(MibSParams::
-					    solveSecondLevelWhenXYVarsInt));
-    int solveSecondLevelWhenXVarsInt(MibSPar_->entry(MibSParams::
-					   solveSecondLevelWhenXVarsInt));
-    int solveSecondLevelWhenLVarsInt(MibSPar_->entry(MibSParams::
-					      solveSecondLevelWhenLVarsInt));
-    int solveSecondLevelWhenLVarsFixed(MibSPar_->entry(MibSParams::
-						solveSecondLevelWhenLVarsFixed));
-    int computeBestUBWhenXVarsInt(MibSPar_->entry(MibSParams::
-					      computeBestUBWhenXVarsInt));
-    int computeBestUBWhenLVarsInt(MibSPar_->entry(MibSParams::
-						  computeBestUBWhenLVarsInt));
-    int computeBestUBWhenLVarsFixed(MibSPar_->entry(MibSParams::
-						    computeBestUBWhenLVarsFixed));
+    int solveSecondLevelWhenXYVarsInt(MibSPar_->entry(MibSParams::solveSecondLevelWhenXYVarsInt));
+    int solveSecondLevelWhenXVarsInt(MibSPar_->entry(MibSParams::solveSecondLevelWhenXVarsInt));
+    int solveSecondLevelWhenLVarsInt(MibSPar_->entry(MibSParams::solveSecondLevelWhenLVarsInt));
+    int solveSecondLevelWhenLVarsFixed(MibSPar_->entry(MibSParams::solveSecondLevelWhenLVarsFixed));
+    int computeBestUBWhenXVarsInt(MibSPar_->entry(MibSParams::computeBestUBWhenXVarsInt));
+    int computeBestUBWhenLVarsInt(MibSPar_->entry(MibSParams::computeBestUBWhenLVarsInt));
+    int computeBestUBWhenLVarsFixed(MibSPar_->entry(MibSParams::computeBestUBWhenLVarsFixed));
 
-    if((solveSecondLevelWhenXYVarsInt == PARAM_NOTSET) &&
-       (solveSecondLevelWhenXVarsInt == PARAM_NOTSET) &&
-       (solveSecondLevelWhenLVarsInt == PARAM_NOTSET) &&
-       (solveSecondLevelWhenLVarsFixed == PARAM_NOTSET) &&
-       (computeBestUBWhenXVarsInt == PARAM_NOTSET) &&
-       (computeBestUBWhenLVarsInt == PARAM_NOTSET) &&
-       (computeBestUBWhenLVarsFixed == PARAM_NOTSET)){
-	MibSPar()->setEntry(MibSParams::solveSecondLevelWhenXYVarsInt, PARAM_ON);
-	MibSPar()->setEntry(MibSParams::solveSecondLevelWhenLVarsFixed, PARAM_ON);
-	MibSPar()->setEntry(MibSParams::computeBestUBWhenLVarsFixed, PARAM_ON);
+    if ((solveSecondLevelWhenXYVarsInt == PARAM_NOTSET) &&
+        (solveSecondLevelWhenXVarsInt == PARAM_NOTSET) &&
+        (solveSecondLevelWhenLVarsInt == PARAM_NOTSET) &&
+        (solveSecondLevelWhenLVarsFixed == PARAM_NOTSET) &&
+        (computeBestUBWhenXVarsInt == PARAM_NOTSET) &&
+        (computeBestUBWhenLVarsInt == PARAM_NOTSET) &&
+        (computeBestUBWhenLVarsFixed == PARAM_NOTSET)){
+       MibSPar()->setEntry(MibSParams::solveSecondLevelWhenXYVarsInt, PARAM_ON);
+       MibSPar()->setEntry(MibSParams::solveSecondLevelWhenLVarsFixed, PARAM_ON);
+       MibSPar()->setEntry(MibSParams::computeBestUBWhenLVarsFixed, PARAM_ON);
     }
 
-    if(printProblemInfo == true){
-	if(MibSPar_->entry(MibSParams::solveSecondLevelWhenXYVarsInt) == PARAM_ON){
-	    std::cout << "'solveSecondLevelWhenXYVarsInt' is true." << std::endl;
-	}
+    if (printProblemInfo == true){
+       if (MibSPar_->entry(MibSParams::solveSecondLevelWhenXYVarsInt) == PARAM_ON){
+          std::cout << "solveSecondLevelWhenXYVarsInt is set." << std::endl;
+       }
     
-        if(MibSPar_->entry(MibSParams::solveSecondLevelWhenXVarsInt) == PARAM_ON){
-	    std::cout << "'solveSecondLevelWhenXVarsInt' is true." <<std::endl;
+       if (MibSPar_->entry(MibSParams::solveSecondLevelWhenXVarsInt) == PARAM_ON){
+          std::cout << "solveSecondLevelWhenXVarsInt is set." <<std::endl;
+       }
+
+       if (MibSPar_->entry(MibSParams::solveSecondLevelWhenLVarsInt) == PARAM_ON){
+          std::cout << "solveSecondLevelWhenLVarsInt is set." <<std::endl;
+       }
+       
+       if (MibSPar_->entry(MibSParams::solveSecondLevelWhenLVarsFixed) == PARAM_ON){
+          std::cout << "solveSecondLevelWhenLVarsFixed is set." <<std::endl;
+       }
+       
+       if (MibSPar_->entry(MibSParams::computeBestUBWhenXVarsInt) == PARAM_ON){
+          std::cout << "computeBestUBWhenXVarsInt is set." <<std::endl;
 	}
 
-        if(MibSPar_->entry(MibSParams::solveSecondLevelWhenLVarsInt) == PARAM_ON){
-	    std::cout << "'solveSecondLevelWhenLVarsInt' is true." <<std::endl;
-	}
-
-        if(MibSPar_->entry(MibSParams::solveSecondLevelWhenLVarsFixed) == PARAM_ON){
-	    std::cout << "'solveSecondLevelWhenLVarsFixed' is true." <<std::endl;
-	}
-
-        if(MibSPar_->entry(MibSParams::computeBestUBWhenXVarsInt) == PARAM_ON){
-	    std::cout << "'computeBestUBWhenXVarsInt' is true." <<std::endl;
-	}
-
-        if(MibSPar_->entry(MibSParams::computeBestUBWhenLVarsInt) == PARAM_ON){
-	    std::cout << "'computeBestUBWhenLVarsInt' is true." <<std::endl;
-	}
-
-        if(MibSPar_->entry(MibSParams::computeBestUBWhenLVarsFixed) == PARAM_ON){
-	    std::cout << "'computeBestUBWhenLVarsFixed' is true." <<std::endl;
-	}
+       if (MibSPar_->entry(MibSParams::computeBestUBWhenLVarsInt) == PARAM_ON){
+          std::cout << "computeBestUBWhenLVarsInt is set." <<std::endl;
+       }
+       
+       if (MibSPar_->entry(MibSParams::computeBestUBWhenLVarsFixed) == PARAM_ON){
+          std::cout << "computeBestUBWhenLVarsFixed is set." <<std::endl;
+       }
     }
-
+    
     //Setting "saveSeenLinkingSols" parameter
     
-    if(MibSPar_->entry(MibSParams::useLinkingSolutionPool) == PARAM_NOTSET){
-	MibSPar()->setEntry(MibSParams::useLinkingSolutionPool, PARAM_ON);
+    if (MibSPar_->entry(MibSParams::useLinkingSolutionPool) == PARAM_NOTSET){
+       MibSPar()->setEntry(MibSParams::useLinkingSolutionPool, PARAM_ON);
     }
-
-    if(printProblemInfo == true){
-	if(MibSPar_->entry(MibSParams::useLinkingSolutionPool) == PARAM_ON){
-	    std::cout << "'seenLinkingSolutions' pool is used." << std::endl;
-	}
-	else{
-	    std::cout << "'seenLinkingSolutions' pool is not used." << std::endl;
-	
+    
+    if (printProblemInfo == true){
+       if(MibSPar_->entry(MibSParams::useLinkingSolutionPool) == PARAM_ON){
+          std::cout << "Linking solution pool will be used." << std::endl;
+       }
+       else{
+          std::cout << "Linking solution pool will not be used." << std::endl;
 	}
     }
-	
+    std::cout << std::endl;
+    
     delete [] newRowSense;
 }

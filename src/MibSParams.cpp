@@ -6,7 +6,7 @@
 /*          Ted Ralphs, Lehigh University                                    */
 /*          Sahar Tahernajad, Lehigh University                              */
 /*                                                                           */
-/* Copyright (C) 2007-2017 Lehigh University, Scott DeNegre, and Ted Ralphs. */
+/* Copyright (C) 2007-2019 Lehigh University, Scott DeNegre, and Ted Ralphs. */
 /* All Rights Reserved.                                                      */
 /*                                                                           */
 /* This software is licensed under the Eclipse Public License. Please see    */
@@ -53,6 +53,9 @@ MibSParams::createKeywordList() {
 
    keys_.push_back(make_pair(std::string("MibS_doDualFixing"),
 			     AlpsParameter(AlpsBoolPar, doDualFixing)));
+
+   keys_.push_back(make_pair(std::string("MibS_useUBDecompose"),
+			     AlpsParameter(AlpsBoolPar, useUBDecompose)));
    
    keys_.push_back(make_pair(std::string("MibS_turnOffOtherCuts"),
 			     AlpsParameter(AlpsBoolPar, turnOffOtherCuts)));
@@ -62,6 +65,16 @@ MibSParams::createKeywordList() {
 
    keys_.push_back(make_pair(std::string("MibS_allowRemoveCut"),
 			     AlpsParameter(AlpsBoolPar, allowRemoveCut)));
+
+   keys_.push_back(make_pair(std::string("MibS_useNewPureIntCut"),
+			     AlpsParameter(AlpsBoolPar, useNewPureIntCut)));
+
+   //the parameter for using progressive hedging
+   //note that this heuristic can be used only when
+   //the parameter "stochasticityType" is set to "stochasticWithoutSAA"
+   keys_.push_back(make_pair(std::string("MibS_useProgresHedg"),
+			     AlpsParameter(AlpsBoolPar, useProgresHedg)));
+   
 
    //--------------------------------------------------------
    // BoolArrayPar
@@ -148,8 +161,23 @@ MibSParams::createKeywordList() {
    keys_.push_back(make_pair(std::string("MibS_useIntersectionCut"),
                              AlpsParameter(AlpsIntPar, useIntersectionCut)));
 
-   keys_.push_back(make_pair(std::string("MibS_intersectionCutType"),
-			     AlpsParameter(AlpsIntPar, intersectionCutType)));
+   //keys_.push_back(make_pair(std::string("MibS_intersectionCutType"),
+   //			     AlpsParameter(AlpsIntPar, intersectionCutType)));
+
+   keys_.push_back(make_pair(std::string("MibS_useTypeIC"),
+			     AlpsParameter(AlpsIntPar, useTypeIC)));
+
+   keys_.push_back(make_pair(std::string("MibS_useTypeWatermelon"),
+			     AlpsParameter(AlpsIntPar, useTypeWatermelon)));
+
+   keys_.push_back(make_pair(std::string("MibS_useTypeHypercubeIC"),
+			     AlpsParameter(AlpsIntPar, useTypeHypercubeIC)));
+
+   keys_.push_back(make_pair(std::string("MibS_useTypeTenderIC"),
+			     AlpsParameter(AlpsIntPar, useTypeTenderIC)));
+
+   keys_.push_back(make_pair(std::string("MibS_useTypeHybridIC"),
+			     AlpsParameter(AlpsIntPar, useTypeHybridIC)));
 
    keys_.push_back(make_pair(std::string("MibS_bilevelFreeSetTypeIC"),
 			     AlpsParameter(AlpsIntPar, bilevelFreeSetTypeIC)));
@@ -180,6 +208,87 @@ MibSParams::createKeywordList() {
    keys_.push_back(make_pair(std::string("MibS_useLinkingSolutionPool"),
 			     AlpsParameter(AlpsIntPar, useLinkingSolutionPool)));
 
+   keys_.push_back(make_pair(std::string("MibS_newPureIntCutDepthLb"),
+			     AlpsParameter(AlpsIntPar, newPureIntCutDepthLb)));
+
+   keys_.push_back(make_pair(std::string("MibS_newPureIntCutDepthUb"),
+			     AlpsParameter(AlpsIntPar, newPureIntCutDepthUb)));
+
+   keys_.push_back(make_pair(std::string("MibS_boundCutOptimalType"),
+			     AlpsParameter(AlpsIntPar, boundCutOptimalType)));
+
+   keys_.push_back(make_pair(std::string("MibS_boundCutDepthLb"),
+			     AlpsParameter(AlpsIntPar, boundCutDepthLb)));
+
+   keys_.push_back(make_pair(std::string("MibS_boundCutDepthUb"),
+			     AlpsParameter(AlpsIntPar, boundCutDepthUb)));
+
+   keys_.push_back(make_pair(std::string("MibS_boundCutFreq"),
+			     AlpsParameter(AlpsIntPar, boundCutFreq)));
+
+   keys_.push_back(make_pair(std::string("MibS_boundCutNodeLim"),
+			     AlpsParameter(AlpsIntPar, boundCutNodeLim)));
+
+   keys_.push_back(make_pair(std::string("MibS_relaxTypeParamBoundCut"),
+   			     AlpsParameter(AlpsIntPar, relaxTypeParamBoundCut)));
+
+   keys_.push_back(make_pair(std::string("MibS_maxActiveNodes"),
+			     AlpsParameter(AlpsIntPar, maxActiveNodes)));
+
+   //parameters for stochastic and SAA
+   //this parameter should be set to false, when the problem is
+   //stochastic and A2 is not random.
+   keys_.push_back(make_pair(std::string("MibS_isA2Random"),
+			     AlpsParameter(AlpsIntPar, isA2Random)));
+
+   //this parameter should be set to true when the smps format
+   //is used for the stochastic case. 
+   keys_.push_back(make_pair(std::string("MibS_isSMPSFormat"),
+			     AlpsParameter(AlpsIntPar, isSMPSFormat)));
+   //N
+   keys_.push_back(make_pair(std::string("MibS_sampSizeSAA"),
+			     AlpsParameter(AlpsIntPar, sampSizeSAA)));
+   //N'
+   keys_.push_back(make_pair(std::string("MibS_evalSampSizeSAA"),
+			     AlpsParameter(AlpsIntPar, evalSampSizeSAA)));
+   //M
+   keys_.push_back(make_pair(std::string("MibS_replNumSAA"),
+			     AlpsParameter(AlpsIntPar, replNumSAA)));
+
+   keys_.push_back(make_pair(std::string("MibS_lbDistB2SAA"),
+			     AlpsParameter(AlpsIntPar, lbDistB2SAA)));
+   
+   keys_.push_back(make_pair(std::string("MibS_ubDistB2SAA"),
+			     AlpsParameter(AlpsIntPar, ubDistB2SAA)));
+
+   keys_.push_back(make_pair(std::string("MibS_lbDistA2SAA"),
+			     AlpsParameter(AlpsIntPar, lbDistA2SAA)));
+
+   keys_.push_back(make_pair(std::string("MibS_ubDistA2SAA"),
+			     AlpsParameter(AlpsIntPar, ubDistA2SAA)));
+
+   //it is assumed that incDistB2NumerSAA <= incDistB2DenumSAA
+   //and they are relatively prime (the same for A2)
+   //it is assumed that numerators are 1  
+   keys_.push_back(make_pair(std::string("MibS_incDistB2NumerSAA"),
+			     AlpsParameter(AlpsIntPar, incDistB2NumerSAA)));
+
+   keys_.push_back(make_pair(std::string("MibS_incDistB2DenumSAA"),
+			     AlpsParameter(AlpsIntPar, incDistB2DenumSAA)));
+
+   keys_.push_back(make_pair(std::string("MibS_incDistA2NumerSAA"),
+			     AlpsParameter(AlpsIntPar, incDistA2NumerSAA)));
+
+   keys_.push_back(make_pair(std::string("MibS_incDistA2DenumSAA"),
+			     AlpsParameter(AlpsIntPar, incDistA2DenumSAA)));
+
+   //parameters for progressive hedging
+   keys_.push_back(make_pair(std::string("MibS_iterationLimitPH"),
+			     AlpsParameter(AlpsIntPar, iterationLimitPH)));
+
+   keys_.push_back(make_pair(std::string("MibS_nodeLimitPHSubprob"),
+			     AlpsParameter(AlpsIntPar, nodeLimitPHSubprob)));
+
    //--------------------------------------------------------
    // String Parameters.
    //--------------------------------------------------------
@@ -187,11 +296,37 @@ MibSParams::createKeywordList() {
    keys_.push_back(make_pair(std::string("MibS_auxiliaryInfoFile"),
 			     AlpsParameter(AlpsStringPar, auxiliaryInfoFile)));
 
+   keys_.push_back(make_pair(std::string("MibS_auxiliaryTimFile"),
+			     AlpsParameter(AlpsStringPar, auxiliaryTimFile)));
+
+   keys_.push_back(make_pair(std::string("MibS_auxiliaryStoFile"),
+			     AlpsParameter(AlpsStringPar, auxiliaryStoFile)));
+
    keys_.push_back(make_pair(std::string("MibS_feasCheckSolver"),
 			     AlpsParameter(AlpsStringPar, feasCheckSolver)));
 
    keys_.push_back(make_pair(std::string("MibS_inputFormat"),
 			     AlpsParameter(AlpsStringPar, inputFormat)));
+
+   //saharStoc:this parameter should be set to
+   //"deterministic" : deterministic problems
+   //"stochasticWithSAA": stochastic problem and is solved by SAA method 
+   //"stochasticWithoutSAA": stochastic problem, but SAA method is not used.
+   //When the SAA method is not used, the format should be SMPS necessarily.
+   //So the parameter "isSMPSFormat" should be set to true.
+   keys_.push_back(make_pair(std::string("MibS_stochasticityType"),
+			     AlpsParameter(AlpsStringPar, stochasticityType)));
+
+   //--------------------------------------------------------
+   // Double Parameters.
+   //--------------------------------------------------------
+
+   keys_.push_back(make_pair(std::string("MibS_boundCutTimeLim"),
+			     AlpsParameter(AlpsDoublePar, boundCutTimeLim)));
+
+   //For progressive hedging
+   keys_.push_back(make_pair(std::string("MibS_optimalRelGapLimitPHSubprob"),
+			     AlpsParameter(AlpsDoublePar, optimalRelGapLimitPHSubprob)));
 
 }
 
@@ -208,9 +343,9 @@ MibSParams::setDefaultEntries() {
      
    setEntry(useBoundCut, false);
    
-   setEntry(boundCutOptimal, false);
+   setEntry(boundCutOptimal, true);
    
-   setEntry(boundCutRelaxUpper, true);
+   setEntry(boundCutRelaxUpper, false);
 
    setEntry(useIpBound, false);
 
@@ -220,11 +355,17 @@ MibSParams::setDefaultEntries() {
 
    setEntry(doDualFixing, false);
 
+   setEntry(useUBDecompose, false);
+
    setEntry(turnOffOtherCuts, false);
 
    setEntry(printProblemInfo, true);
 
    setEntry(allowRemoveCut, false);
+
+   setEntry(useNewPureIntCut, false);
+
+   setEntry(useProgresHedg, false);
 
    //-------------------------------------------------------------
    // Int Parameters.
@@ -280,7 +421,17 @@ MibSParams::setDefaultEntries() {
 
    setEntry(useIntersectionCut, PARAM_NOTSET);
 
-   setEntry(intersectionCutType, MibSIntersectionCutTypeNotSet);
+   //setEntry(intersectionCutType, MibSIntersectionCutTypeNotSet);
+
+   setEntry(useTypeIC, PARAM_NOTSET);
+
+   setEntry(useTypeWatermelon, PARAM_NOTSET);
+
+   setEntry(useTypeHypercubeIC, PARAM_NOTSET);
+
+   setEntry(useTypeTenderIC, PARAM_NOTSET);
+
+   setEntry(useTypeHybridIC, PARAM_NOTSET);
 
    setEntry(bilevelFreeSetTypeIC, MibSBilevelFreeSetTypeICNotSet);
 
@@ -300,9 +451,61 @@ MibSParams::setDefaultEntries() {
 
    setEntry(useLinkingSolutionPool, PARAM_NOTSET);
 
+   setEntry(newPureIntCutDepthLb, -1);
+
+   setEntry(newPureIntCutDepthUb, -1);
+
+   setEntry(boundCutOptimalType, MibSBoundCutOptimalTypeParametric);
+
+   setEntry(boundCutDepthLb, -1);
+
+   setEntry(boundCutDepthUb, -1);
+
+   setEntry(boundCutFreq, 1);
+
+   setEntry(boundCutNodeLim, ALPS_INT_MAX);
+
+   setEntry(relaxTypeParamBoundCut, MibSRelaxTypeParamBoundCutLP);
+
+   setEntry(maxActiveNodes, 1);
+
+   setEntry(isA2Random, PARAM_NOTSET);
+
+   setEntry(isSMPSFormat, PARAM_NOTSET);
+
+   setEntry(sampSizeSAA, PARAM_NOTSET);
+
+   setEntry(evalSampSizeSAA, PARAM_NOTSET);
+
+   setEntry(replNumSAA, PARAM_NOTSET);
+
+   setEntry(lbDistB2SAA, PARAM_NOTSET);
+
+   setEntry(ubDistB2SAA, PARAM_NOTSET);
+
+   setEntry(lbDistA2SAA, PARAM_NOTSET);
+
+   setEntry(ubDistA2SAA, PARAM_NOTSET);
+
+   setEntry(incDistB2NumerSAA, PARAM_NOTSET);
+
+   setEntry(incDistB2DenumSAA, PARAM_NOTSET);
+
+   setEntry(incDistA2NumerSAA, PARAM_NOTSET);
+
+   setEntry(incDistA2DenumSAA, PARAM_NOTSET);
+
+   setEntry(iterationLimitPH, ALPS_INT_MAX);
+
+   setEntry(nodeLimitPHSubprob, ALPS_INT_MAX);
+
    //-------------------------------------------------------------
    // Double Parameters
    //-------------------------------------------------------------
+
+   setEntry(boundCutTimeLim, 3600);
+
+   setEntry(optimalRelGapLimitPHSubprob, 1.0e-4);
    
    //-------------------------------------------------------------
    // String Parameters
@@ -310,9 +513,15 @@ MibSParams::setDefaultEntries() {
   
    setEntry(auxiliaryInfoFile, "");
 
+   setEntry(auxiliaryTimFile, "");
+
+   setEntry(auxiliaryStoFile, "");
+
    setEntry(feasCheckSolver, "SYMPHONY");
 
    setEntry(inputFormat, "indexBased");
+
+   setEntry(stochasticityType, "deterministic");
 }
 
 //#############################################################################

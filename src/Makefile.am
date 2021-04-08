@@ -4,7 +4,7 @@
 # Authors: Scott DeNegre, Lehigh University                                 #
 #          Ted Ralphs, Lehigh University                                    #
 #          Sahar Tahernajad, Lehigh University                              #
-# Copyright (C) 2007-2016 Lehigh University, Scott DeNegre, Ted Ralphs,     #
+# Copyright (C) 2007-2019 Lehigh University, Scott DeNegre, Ted Ralphs,     #
 #                         and Sahar Tahernajad                              #
 # All Rights Reserved.                                                      #
 #                                                                           #
@@ -61,7 +61,7 @@ libMibs_la_SOURCES = \
 	MibSModel.cpp \
 	MibSBranchStrategyRel.hpp \
 	MibSModel.hpp \
-	MibSHelp.hpp
+	MibSHelper.hpp
 
 # List all additionally required libraries
 if DEPENDENCY_LINKING
@@ -115,7 +115,7 @@ includecoin_HEADERS = \
 	MibSModel.hpp \
 	MibSBranchStrategyStrong.hpp \
 	MibSObjectInt.hpp \
-	MibSHelp.hpp
+	MibSHelper.hpp
 
 ########################################################################
 #                     Installing manifest (MSVC++)                     #
