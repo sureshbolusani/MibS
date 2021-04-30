@@ -154,6 +154,8 @@ MibSModel::initialize()
   G2Matrix_ = NULL;
   boundProbRoot_ = NULL;
   boundProbLeafNum_ = 0;
+  generalBendersSubprobRoot_ = NULL;
+  generalBendersSubprobLeafNum_ = 0;
   numScenarios_ = 0;
   stocA2Matrix_ = NULL;
   bS_ = new MibSBilevel();
@@ -1771,6 +1773,7 @@ MibSModel::solveRestrictedPH(const CoinPackedMatrix& matrix,
     modelResPH->MibSPar()->setEntry(MibSParams::computeBestUBWhenLVarsInt, PARAM_OFF);
     modelResPH->MibSPar()->setEntry(MibSParams::computeBestUBWhenLVarsFixed, PARAM_ON);
     modelResPH->MibSPar()->setEntry(MibSParams::useLinkingSolutionPool, PARAM_ON);
+    modelResPH->MibSPar()->setEntry(MibSParams::useGeneralBendersCut, false);
 
     modelResPH->isInterdict_ = false;
     modelResPH->MibSPar()->setEntry(MibSParams::stochasticityType, "stochasticWithoutSAA");
@@ -2137,6 +2140,8 @@ MibSModel::solvePHProb(const CoinPackedMatrix& rowMatrix, const double *varLB,
     pHModel->MibSPar()->setEntry(MibSParams::computeBestUBWhenLVarsInt, PARAM_OFF);
     pHModel->MibSPar()->setEntry(MibSParams::computeBestUBWhenLVarsFixed, PARAM_ON);
     pHModel->MibSPar()->setEntry(MibSParams::useLinkingSolutionPool, PARAM_ON);
+    pHModel->MibSPar()->setEntry(MibSParams::useGeneralBendersCut, false);
+
     pHModel->isInterdict_ = false;
     pHModel->MibSPar()->setEntry(MibSParams::stochasticityType, "deterministic");
     pHModel->AlpsPar()->setEntry(AlpsParams::clockType, clockType);
@@ -3129,6 +3134,7 @@ MibSModel::solveSAA(const CoinPackedMatrix& matrix,
     modelSAA->MibSPar()->setEntry(MibSParams::computeBestUBWhenLVarsInt, PARAM_OFF);
     modelSAA->MibSPar()->setEntry(MibSParams::computeBestUBWhenLVarsFixed, PARAM_ON);
     modelSAA->MibSPar()->setEntry(MibSParams::useLinkingSolutionPool, PARAM_ON);
+    modelSAA->MibSPar()->setEntry(MibSParams::useGeneralBendersCut, false);
 
     modelSAA->isInterdict_ = false;
     modelSAA->MibSPar()->setEntry(MibSParams::stochasticityType, "stochasticWithSAA");
@@ -6200,7 +6206,8 @@ MibSModel::instanceStructure(const CoinPackedMatrix *newMatrix,
 	  (MibSPar_->entry(MibSParams::useTypeTenderIC) == PARAM_ON) ||
 	  (MibSPar_->entry(MibSParams::useTypeHybridIC) == PARAM_ON) ||
 	  (MibSPar_->entry(MibSParams::useIncObjCut) == PARAM_ON) ||
-	  (MibSPar_->entry(MibSParams::usePureIntegerCut) == PARAM_ON)){
+	  (MibSPar_->entry(MibSParams::usePureIntegerCut) == PARAM_ON) ||
+          (MibSPar_->entry(MibSParams::useGeneralBendersCut) == true)){
 	   throw CoinError("Only hypercube intersection cut is currently functional for the stochastic problems",
 			   "instanceStructure", "MibSModel");
        }

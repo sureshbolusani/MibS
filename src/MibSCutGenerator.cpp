@@ -62,6 +62,7 @@ MibSCutGenerator::MibSCutGenerator(MibSModel *mibs)
   upper_ = 0.0;
   maximalCutCount_ = 0;
   numCalledBoundCut_ = -1;
+  numCalledGeneralBendersCut_ = -1;
   isBigMIncObjSet_ = false;
   bigMIncObj_ = 0.0;
   watermelonICSolver_ = 0;
@@ -2675,10 +2676,10 @@ MibSCutGenerator::boundCuts(BcpsConstraintPool &conPool, double *passedObjCoeffs
 	    if(boundCutOptimalType == MibSBoundCutOptimalTypeParametric){
 	      boundModel->AlpsPar()->setEntry(AlpsParams::deletePrunedNodes, true);
 	      boundModel->AlpsPar()->setEntry(AlpsParams::deleteDeadNode, false);
-	      boundModel->BlisPar()->setEntry(BlisParams::difference, -2);  
+	      boundModel->BlisPar()->setEntry(BlisParams::difference, -2);
 	    }
 	}
-	    
+
 	double *colUpper = new double[tCols];
 	double *colLower = new double[tCols];
 	memcpy(colLower, oSolver->getColLower(), sizeof(double) * tCols);
@@ -2772,7 +2773,7 @@ MibSCutGenerator::boundCuts(BcpsConstraintPool &conPool, double *passedObjCoeffs
 	    goto TERM_BOUNDCUT;
 	  }
 	}
-	
+
 	delete [] colLower;
         delete [] colUpper;
 	delete [] lColLbInLProb;
@@ -2914,6 +2915,385 @@ MibSCutGenerator::boundCuts(BcpsConstraintPool &conPool, double *passedObjCoeffs
 }
 
 //############################################################################# 
+int
+MibSCutGenerator::generalBendersCuts(BcpsConstraintPool &conPool, double
+      *passedObjCoeffs, double &passedRhs, bool &isInfeasible)
+{
+    /* Derive a bound on the upper level objective function component
+       of the lower level variables */
+    bool generalBendersCutOptimal
+      = localModel_->MibSPar_->entry(MibSParams::generalBendersCutOptimal);
+
+    //parametric or non-parametric
+    int generalBendersCutOptimalType =
+      localModel_->MibSPar_->entry(MibSParams::generalBendersCutOptimalType);
+
+    std::string feasCheckSolver
+	= localModel_->MibSPar_->entry(MibSParams::feasCheckSolver);
+
+    int problemType
+	= localModel_->MibSPar_->entry(MibSParams::bilevelProblemType);
+
+    bool allowRemoveCut(localModel_->MibSPar_->entry
+			(MibSParams::allowRemoveCut));
+
+    double generalBendersCutTimeLim
+	= localModel_->MibSPar_->entry(MibSParams::generalBendersCutTimeLim);
+
+    int generalBendersCutNodeLim
+	= localModel_->MibSPar_->entry(MibSParams::generalBendersCutNodeLim);
+
+    MibSTreeNode * node =
+      dynamic_cast<MibSTreeNode *>(localModel_->activeNode_);
+
+    if(passedObjCoeffs != NULL){
+      generalBendersCutOptimal = true;
+      generalBendersCutOptimalType = MibSGeneralBendersCutOptimalTypeNonParametric;
+    }
+
+    if ((localModel_->boundingPass_ > 1) && (passedObjCoeffs == NULL)){
+	return 0;
+    }
+
+    /** Set up lp solver **/
+    OsiClpSolverInterface lpSolver;
+    lpSolver.getModelPtr()->setDualBound(1.0e10);
+    lpSolver.messageHandler()->setLogLevel(0);
+    double lObjSense = localModel_->getLowerObjSense();
+    double uObjSense = localModel_->getUpperObjSense();
+    double * lObjCoeffs = localModel_->getLowerObjCoeffs();
+    double * uObjCoeffs = localModel_->getUpperObjCoeffs();
+    int lCols(localModel_->getLowerDim());
+    int * lColIndices = localModel_->getLowerColInd();
+    int uCols(localModel_->getUpperDim());
+    int * uColIndices = localModel_->getUpperColInd();
+    double * origColLb = localModel_->getOrigColLb();
+    double * origColUb = localModel_->getOrigColUb();
+    int i(0), index(0);
+    double etol(localModel_->etol_);
+
+    OsiSolverInterface * oSolver = localModel_->getSolver();
+    double infinity(oSolver->getInfinity());
+    bool isTimeLimReached(false);
+
+    CoinPackedMatrix matrix = *oSolver->getMatrixByCol();
+    CoinPackedMatrix rowMatrix = *oSolver->getMatrixByRow();
+    int numCols = localModel_->getLowerDim() + localModel_->getUpperDim();
+    int auxCols = oSolver->getNumCols() - numCols;
+    int *indDel = new int[auxCols];
+    CoinIotaN(indDel, auxCols,numCols);
+    matrix.deleteCols(auxCols, indDel);
+
+    int tCols(numCols);
+    double * nObjCoeffs = new double[tCols];
+
+    CoinZeroN(nObjCoeffs, tCols);
+
+    if(passedObjCoeffs != NULL){
+	memcpy(nObjCoeffs, passedObjCoeffs, sizeof(double) * tCols);
+    }
+    else{
+	for(i = 0; i < lCols; i++){
+	    index = lColIndices[i];
+	    nObjCoeffs[index] = uObjSense * uObjCoeffs[index];
+	}
+    }
+
+    int numCuts(0);
+    double objval = -1 * infinity;
+    double upper_objval = infinity;
+    char * colType = new char[tCols];
+
+    if(generalBendersCutOptimal){
+      if(((generalBendersCutOptimalType == MibSGeneralBendersCutOptimalTypeParametric) &&
+	  (node->getIndex() == 0)) ||
+	 (generalBendersCutOptimalType == MibSGeneralBendersCutOptimalTypeNonParametric) ||
+	 (passedObjCoeffs != NULL)){
+	/** Create new MibS model to solve bilevel **/
+	MibSModel *generalBendersModel = new MibSModel();
+	generalBendersModel->setSolver(&lpSolver);
+	generalBendersModel->AlpsPar()->setEntry(AlpsParams::msgLevel, -1);
+	//generalBendersModel->AlpsPar()->setEntry(AlpsParams::msgLevel, 1000);
+	generalBendersModel->AlpsPar()->setEntry(AlpsParams::nodeLimit, generalBendersCutNodeLim);
+	generalBendersModel->AlpsPar()->setEntry(AlpsParams::timeLimit, generalBendersCutTimeLim);
+	generalBendersModel->BlisPar()->setEntry(BlisParams::heurStrategy, 0);
+	generalBendersModel->MibSPar()->setEntry(MibSParams::feasCheckSolver, feasCheckSolver.c_str());
+	generalBendersModel->MibSPar()->setEntry(MibSParams::bilevelCutTypes, 0);
+	generalBendersModel->MibSPar()->setEntry(MibSParams::printProblemInfo, false);
+	generalBendersModel->MibSPar()->setEntry(MibSParams::useGeneralBendersCut, false);
+	if(passedObjCoeffs != NULL){
+            //Suresh: what exactly is this case?
+	    generalBendersModel->MibSPar()->setEntry(MibSParams::branchStrategy, MibSBranchingStrategyLinking);
+	    generalBendersModel->MibSPar()->setEntry(MibSParams::useBendersCut, PARAM_OFF);
+	    generalBendersModel->MibSPar()->setEntry(MibSParams::useGeneralNoGoodCut, PARAM_OFF);
+	    generalBendersModel->MibSPar()->setEntry(MibSParams::useTypeIC, PARAM_OFF);
+	    generalBendersModel->MibSPar()->setEntry(MibSParams::useTypeWatermelon, PARAM_OFF);
+	    generalBendersModel->MibSPar()->setEntry(MibSParams::useTypeHypercubeIC, PARAM_OFF);
+	    generalBendersModel->MibSPar()->setEntry(MibSParams::useTypeTenderIC, PARAM_OFF);
+	    generalBendersModel->MibSPar()->setEntry(MibSParams::useTypeHybridIC, PARAM_OFF);
+	    generalBendersModel->MibSPar()->setEntry(MibSParams::useIncObjCut, PARAM_OFF);
+	    generalBendersModel->MibSPar()->setEntry(MibSParams::bilevelCutTypes, -1);
+	    generalBendersModel->MibSPar()->setEntry(MibSParams::usePureIntegerCut, PARAM_OFF);
+	    generalBendersModel->MibSPar()->setEntry(MibSParams::useNewPureIntCut, false);
+	    generalBendersModel->MibSPar()->setEntry(MibSParams::useBoundCut, false);
+	}
+	else{
+	    //sahar: these ones should be modified
+            //suresh: what exactly is this case?
+	    generalBendersModel->MibSPar()->setEntry(MibSParams::branchStrategy, MibSBranchingStrategyLinking);
+	    generalBendersModel->MibSPar()->setEntry(MibSParams::useBendersCut, PARAM_ON);
+	    generalBendersModel->MibSPar()->setEntry(MibSParams::useGeneralNoGoodCut, PARAM_OFF);
+	    generalBendersModel->MibSPar()->setEntry(MibSParams::useTypeIC, PARAM_OFF);
+	    generalBendersModel->MibSPar()->setEntry(MibSParams::useTypeWatermelon, PARAM_OFF);
+	    generalBendersModel->MibSPar()->setEntry(MibSParams::useTypeHypercubeIC, PARAM_OFF);
+	    generalBendersModel->MibSPar()->setEntry(MibSParams::useTypeTenderIC, PARAM_OFF);
+	    generalBendersModel->MibSPar()->setEntry(MibSParams::useTypeHybridIC, PARAM_OFF);
+	    generalBendersModel->MibSPar()->setEntry(MibSParams::useIncObjCut, PARAM_OFF);
+	    generalBendersModel->MibSPar()->setEntry(MibSParams::usePureIntegerCut, PARAM_OFF);
+	    generalBendersModel->MibSPar()->setEntry(MibSParams::useNewPureIntCut, false);
+	    generalBendersModel->MibSPar()->setEntry(MibSParams::useBoundCut, false);
+	    if(generalBendersCutOptimalType == MibSGeneralBendersCutOptimalTypeParametric){
+	      generalBendersModel->AlpsPar()->setEntry(AlpsParams::deletePrunedNodes, true);
+	      generalBendersModel->AlpsPar()->setEntry(AlpsParams::deleteDeadNode, false);
+	      generalBendersModel->BlisPar()->setEntry(BlisParams::difference, -2);
+	    }
+	}
+
+	double *colUpper = new double[tCols];
+	double *colLower = new double[tCols];
+	memcpy(colLower, oSolver->getColLower(), sizeof(double) * tCols);
+	memcpy(colUpper, oSolver->getColUpper(), sizeof(double) * tCols);
+	memcpy(colType, localModel_->colType_, tCols);
+
+	double *lColLbInLProb = new double[lCols];
+	double *lColUbInLProb = new double[lCols];
+	for(i = 0; i < lCols; i++){
+	    index = lColIndices[i];
+	    lColLbInLProb[i] = origColLb[index];
+	    lColUbInLProb[i] = origColUb[index];
+	}
+
+	//interdiction problems
+	if(problemType == 1){
+	    generalBendersModel->isInterdict_ = true;
+	}
+
+	generalBendersModel->loadAuxiliaryData(localModel_->getLowerDim(),
+				      localModel_->getLowerRowNum(),
+				      localModel_->getLowerColInd(),
+				      localModel_->getLowerRowInd(),
+				      localModel_->getLowerObjSense(),
+				      localModel_->getLowerObjCoeffs(),
+				      localModel_->getUpperDim(),
+				      localModel_->getUpperRowNum(),
+				      localModel_->getUpperColInd(),
+				      localModel_->getUpperRowInd(),
+				      localModel_->structRowNum_,
+				      localModel_->structRowInd_,
+				      0, NULL, lColLbInLProb, lColUbInLProb);
+
+	generalBendersModel->loadProblemData(matrix, rowMatrix, colLower, colUpper, nObjCoeffs,
+				    oSolver->getRowLower(), oSolver->getRowUpper(),
+				    colType, 1.0, oSolver->getInfinity(),
+				    oSolver->getRowSense());
+
+	int argc = 1;
+	char** argv = new char* [1];
+	argv[0] = (char *) "mibs";
+
+#ifdef  COIN_HAS_MPI
+	AlpsKnowledgeBrokerMPI broker(argc, argv, *generalBendersModel);
+#else
+	AlpsKnowledgeBrokerSerial broker(argc, argv, *generalBendersModel);
+#endif
+
+	broker.search(generalBendersModel);
+
+	if (generalBendersModel->getNumSolutions() > 0){
+	    double *solution = generalBendersModel->incumbent();
+	}
+
+	broker.printBestSolution();
+	if(broker.getSolStatus() == AlpsExitStatusInfeasible){
+	    isInfeasible = true;
+	}
+	else{
+	    if(broker.getBestNode()){
+		lower_objval = broker.getBestNode()->getQuality();
+	    }
+	    else{
+		if(generalBendersModel->getNumSolutions() > 0){
+		    lower_objval = generalBendersModel->getKnowledgeBroker()->getBestQuality();
+		}
+		else{
+		    lower_objval = -1 * infinity;
+		}
+	    }
+	}
+
+	if(generalBendersCutOptimalType == MibSGeneralBendersCutOptimalTypeParametric){
+	  AlpsSubTree *generalBendersSubprobTree = broker.getWorkingSubTree();
+	  localModel_->setGeneralBendersSubprobRoot(generalBendersSubprobTree->getRoot());
+	  localModel_->setGeneralBendersSubprobLinkingPool(generalBendersModel->seenLinkingSolutions);
+	  int numStoredCuts(0);
+	  findLeafNodes(localModel_->getGeneralBendersSubprobRoot(), &numStoredCuts,
+			&localModel_->generalBendersSubprobLeafNum_,
+			localModel_->generalBendersSubprobCutPoolStarts_,
+			localModel_->generalBendersSubprobCutPoolIndices_,
+			localModel_->generalBendersSubprobCutPoolValues_,
+			localModel_->generalBendersSubprobCutPoolBounds_,
+			localModel_->generalBendersSubprobCutPoolSource_,
+			localModel_->generalBendersSubprobLeafNodeCutInf_,
+			localModel_->generalBendersSubprobLeafNodeCutStarts_,
+			localModel_->generalBendersSubprobLeafLb_,
+			localModel_->generalBendersSubprobLeafUb_);
+
+	  if(isTimeLimReached == true){
+	    goto TERM_BOUNDCUT;
+	  }
+	}
+
+	delete [] colLower;
+        delete [] colUpper;
+	delete [] lColLbInLProb;
+	delete [] lColUbInLProb;
+	delete generalBendersModel;
+      }
+    }else if (localModel_->getNumSolutions() > 0){
+	memcpy(colType, localModel_->colType_, tCols);
+	for (i = 0; i < uCols; i++){
+	    colType[uColIndices[i]] = 'C';
+	}
+
+	//Create new upperbound for lower level variables (to fix them)
+	BlisSolution* blisSol = dynamic_cast<BlisSolution*>(
+	   localModel_->getKnowledgeBroker()->getBestKnowledge(
+			       AlpsKnowledgeTypeSolution).first);
+	   const double * sol;
+	   sol = blisSol->getValues();
+	   int lN(localModel_->getLowerDim());
+	   int * lowerColInd = localModel_->getLowerColInd();
+	   int LowZero(0);
+	   std::vector<int> zeroList;
+
+	   for (i=0; i<lN; i++){
+	       if ((sol[lowerColInd[i]]>-etol)&&(sol[lowerColInd[i]]<etol)){
+		   zeroList.push_back(lowerColInd[i]);
+		   LowZero ++;
+	       }
+	   }
+	   double *NewColUpper = new double[numCols];
+	   memcpy(NewColUpper, oSolver->getColUpper(), sizeof(double) * numCols);
+	   for(i=0; i<LowZero/2; i++){
+	       index = zeroList[i];
+	       NewColUpper[index] = 0;
+	   }
+	   /** Create new MibS model to solve bilevel(with new upperbound) **/
+	   MibSModel newGeneralBendersModel;
+	   newGeneralBendersModel.setSolver(&lpSolver);
+	   newGeneralBendersModel.AlpsPar()->setEntry(AlpsParams::msgLevel, -1);
+
+	   newGeneralBendersModel.loadAuxiliaryData(localModel_->getLowerDim(),
+					   localModel_->getLowerRowNum(),
+					   localModel_->getLowerColInd(),
+					   localModel_->getLowerRowInd(),
+					   localModel_->getLowerObjSense(),
+					   localModel_->getLowerObjCoeffs(),
+					   localModel_->getUpperDim(),
+					   localModel_->getUpperRowNum(),
+					   localModel_->getUpperColInd(),
+					   localModel_->getUpperRowInd(),
+					   localModel_->structRowNum_,
+					   localModel_->structRowInd_,
+					   0, NULL, NULL, NULL);
+	   newGeneralBendersModel.loadProblemData(matrix, rowMatrix,
+					 oSolver->getColLower(), NewColUpper,
+					 nObjCoeffs,
+					 oSolver->getRowLower(),
+					 oSolver->getRowUpper(),
+					 localModel_->colType_, 1.0,
+					 oSolver->getInfinity(), oSolver->getRowSense());
+
+	   int argc1 = 1;
+	   char** argv1 = new char* [1];
+	   argv1[0] = (char *) "mibs";
+
+#ifdef  COIN_HAS_MPI
+	   AlpsKnowledgeBrokerMPI Newbroker(argc1, argv1, newGeneralBendersModel);
+#else
+	   AlpsKnowledgeBrokerSerial Newbroker(argc1, argv1, newGeneralBendersModel);
+#endif
+
+	   newGeneralBendersModel.MibSPar()->setEntry(MibSParams::bilevelCutTypes, 1);
+	   newGeneralBendersModel.MibSPar()->setEntry(MibSParams::useBendersCut, PARAM_ON);
+
+	   newGeneralBendersModel.MibSPar()->setEntry(MibSParams::useLowerObjHeuristic, false);
+	   newGeneralBendersModel.MibSPar()->setEntry(MibSParams::useObjCutHeuristic, false);
+	   newGeneralBendersModel.MibSPar()->setEntry(MibSParams::useWSHeuristic, false);
+	   newGeneralBendersModel.MibSPar()->setEntry(MibSParams::useGreedyHeuristic, false);
+
+	   Newbroker.search(&newGeneralBendersModel);
+
+	   Newbroker.printBestSolution();
+	   if (newGeneralBendersModel.getNumSolutions() > 0){
+	       objval = newGeneralBendersModel.getKnowledgeBroker()->getBestQuality();
+#if 0
+	       double objval1(generalBendersModel.getKnowledgeBroker()->getBestQuality());
+	       std::cout<<"obj="<<objval1<<std::endl;
+	       std::cout<<"objWithRest="<<objval<<std::endl;
+#endif
+	   }
+	   zeroList.clear();
+    }
+
+    if((generalBendersCutOptimalType == MibSGeneralBendersCutOptimalTypeParametric) &&
+       (node->getIndex() > 0)){
+      double cutLb(0.0);
+      cutLb = getRhsParamGeneralBendersCut(&isTimeLimReached);
+      if(isTimeLimReached == true){
+	goto TERM_BOUNDCUT;
+      }
+      if(cutLb + etol >= infinity){
+	isInfeasible = true;
+      }
+      lower_objval = cutLb;
+    }
+
+    if(passedObjCoeffs != NULL){
+	passedRhs = -1 * lower_objval;
+    }
+    else if(isInfeasible == true){
+	localModel_->bS_->shouldPrune_ = true;
+    }
+    else{
+	if (lower_objval > -1 * infinity){
+	    double cutub(infinity);
+	    std::vector<int> indexList;
+	    std::vector<double> valsList;
+	    for(i = 0; i < lCols; i++){
+		if (lObjCoeffs[i] == 0.0){
+		    continue;
+		}
+		index = lColIndices[i];
+		indexList.push_back(index);
+		valsList.push_back(-lObjSense *lObjCoeffs[i]);
+	    }
+	    numCuts += addCut(conPool, lower_objval, cutub, indexList, valsList,
+			      allowRemoveCut);
+	    indexList.clear();
+	    valsList.clear();
+	}
+    }
+
+ TERM_BOUNDCUT:
+    delete[] indDel;
+    delete [] colType;
+    delete [] nObjCoeffs;
+
+    return numCuts;
+}
+
+//#############################################################################
 void
 MibSCutGenerator::findLeafNodes(AlpsTreeNode *node, int *numStoredCuts,
 				int *numLeafNodes,
@@ -6259,6 +6639,9 @@ MibSCutGenerator::generateConstraints(BcpsConstraintPool &conPool)
     int useBendersCut = 
        localModel_->MibSPar_->entry(MibSParams::useBendersCut);
 
+    bool useGeneralBendersCut =
+       localModel_->MibSPar_->entry(MibSParams::useGeneralBendersCut);
+
     //int useIntersectionCut =
     //localModel_->MibSPar_->entry(MibSParams::useIntersectionCut);
 
@@ -6345,6 +6728,63 @@ MibSCutGenerator::generateConstraints(BcpsConstraintPool &conPool)
 	      double tmpArg1 = 0;
 	      bool tmpArg2 = false;
 	      boundCuts(conPool, NULL, tmpArg1, tmpArg2);
+	  }
+      }
+
+      if ((useGeneralBendersCut) && (localModel_->boundingPass_ <= 1)){
+
+	  int generalBendersCutFreq(localModel_->MibSPar_->entry(MibSParams::generalBendersCutFreq));
+
+	  int generalBendersCutDepthLb(localModel_->MibSPar_->entry
+			      (MibSParams::generalBendersCutDepthLb));
+
+	  int generalBendersCutDepthUb(localModel_->MibSPar_->entry
+			      (MibSParams::generalBendersCutDepthUb));
+
+	  int depth = static_cast<MibSTreeNode *>(localModel_->activeNode_)->getDepth();
+
+	  bool generalBendersCutOptimal
+	      = localModel_->MibSPar_->entry(MibSParams::generalBendersCutOptimal);
+
+	  int generalBendersCutOptimalType =
+	      localModel_->MibSPar_->entry(MibSParams::generalBendersCutOptimalType);
+
+	  useGeneralBendersCut = false;
+
+	  if((generalBendersCutDepthLb >= 0) && (generalBendersCutDepthUb >= 0)){
+	      if((depth >= generalBendersCutDepthLb) && (depth <= generalBendersCutDepthUb)){
+		  useGeneralBendersCut = true;
+	      }
+	  }
+	  else if(generalBendersCutDepthLb >= 0){
+	      if(depth >= generalBendersCutDepthLb){
+		  useGeneralBendersCut = true;
+	      }
+	  }
+	  else if(generalBendersCutDepthUb >= 0){
+	      if(depth <= generalBendersCutDepthUb){
+		  useGeneralBendersCut = true;
+	      }
+	  }
+	  else{
+	      useGeneralBendersCut = true;
+	  }
+
+	  if(node->getIndex() == 0){
+	      if((generalBendersCutOptimal == true) &&
+		 (generalBendersCutOptimalType == MibSGeneralBendersCutOptimalTypeParametric)){
+		  useGeneralBendersCut = true;
+	      }
+	  }
+
+	  if(useGeneralBendersCut == true){
+	      numCalledGeneralBendersCut_ ++;
+	  }
+
+	  if(((numCalledGeneralBendersCut_%generalBendersCutFreq) == 0) && (useGeneralBendersCut == true)){
+	      double tmpArg1 = 0;
+	      bool tmpArg2 = false;
+	      generalBendersCuts(conPool, NULL, tmpArg1, tmpArg2);
 	  }
       }
       

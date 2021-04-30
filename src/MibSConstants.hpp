@@ -101,6 +101,13 @@ enum MibSBoundCutOptimalType{
   MibSBoundCutOptimalTypeNonParametric
 };
 
+//#############################################################################
+
+enum MibSGeneralBendersCutOptimalType{
+  MibSGeneralBendersCutOptimalTypeParametric = 0,
+  MibSGeneralBendersCutOptimalTypeNonParametric
+};
+
 //############################################################################# 
 /*---------  which_active_con_method choices --------------------------------*/
 #define SIMPLE  0

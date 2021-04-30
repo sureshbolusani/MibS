@@ -74,6 +74,11 @@ MibSParams::createKeywordList() {
    //the parameter "stochasticityType" is set to "stochasticWithoutSAA"
    keys_.push_back(make_pair(std::string("MibS_useProgresHedg"),
 			     AlpsParameter(AlpsBoolPar, useProgresHedg)));
+
+   keys_.push_back(make_pair(std::string("MibS_useGeneralBendersCut"),
+			     AlpsParameter(AlpsBoolPar, useGeneralBendersCut)));
+   keys_.push_back(make_pair(std::string("MibS_generalBendersCutOptimal"),
+			     AlpsParameter(AlpsBoolPar, generalBendersCutOptimal)));
    
 
    //--------------------------------------------------------
@@ -289,6 +294,21 @@ MibSParams::createKeywordList() {
    keys_.push_back(make_pair(std::string("MibS_nodeLimitPHSubprob"),
 			     AlpsParameter(AlpsIntPar, nodeLimitPHSubprob)));
 
+   keys_.push_back(make_pair(std::string("MibS_generalBendersCutOptimalType"),
+			     AlpsParameter(AlpsIntPar, generalBendersCutOptimalType)));
+
+   keys_.push_back(make_pair(std::string("MibS_generalBendersCutDepthLb"),
+			     AlpsParameter(AlpsIntPar, generalBendersCutDepthLb)));
+
+   keys_.push_back(make_pair(std::string("MibS_generalBendersCutDepthUb"),
+			     AlpsParameter(AlpsIntPar, generalBendersCutDepthUb)));
+
+   keys_.push_back(make_pair(std::string("MibS_generalBendersCutFreq"),
+			     AlpsParameter(AlpsIntPar, generalBendersCutFreq)));
+
+   keys_.push_back(make_pair(std::string("MibS_generalBendersCutNodeLim"),
+			     AlpsParameter(AlpsIntPar, generalBendersCutNodeLim)));
+
    //--------------------------------------------------------
    // String Parameters.
    //--------------------------------------------------------
@@ -328,6 +348,9 @@ MibSParams::createKeywordList() {
    keys_.push_back(make_pair(std::string("MibS_optimalRelGapLimitPHSubprob"),
 			     AlpsParameter(AlpsDoublePar, optimalRelGapLimitPHSubprob)));
 
+   keys_.push_back(make_pair(std::string("MibS_generalBendersCutTimeLim"),
+			     AlpsParameter(AlpsDoublePar, generalBendersCutTimeLim)));
+
 }
 
 //#############################################################################
@@ -366,6 +389,10 @@ MibSParams::setDefaultEntries() {
    setEntry(useNewPureIntCut, false);
 
    setEntry(useProgresHedg, false);
+
+   setEntry(useGeneralBendersCut, false);
+
+   setEntry(generalBendersCutOptimal, true);
 
    //-------------------------------------------------------------
    // Int Parameters.
@@ -499,6 +526,16 @@ MibSParams::setDefaultEntries() {
 
    setEntry(nodeLimitPHSubprob, ALPS_INT_MAX);
 
+   setEntry(generalBendersCutOptimalType, MibSGeneralBendersCutOptimalTypeParametric);
+
+   setEntry(generalBendersCutDepthLb, -1);
+
+   setEntry(generalBendersCutDepthUb, -1);
+
+   setEntry(generalBendersCutFreq, 1);
+
+   setEntry(generalBendersCutNodeLim, ALPS_INT_MAX);
+
    //-------------------------------------------------------------
    // Double Parameters
    //-------------------------------------------------------------
@@ -506,6 +543,8 @@ MibSParams::setDefaultEntries() {
    setEntry(boundCutTimeLim, 3600);
 
    setEntry(optimalRelGapLimitPHSubprob, 1.0e-4);
+
+   setEntry(generalBendersCutTimeLim, 3600);
    
    //-------------------------------------------------------------
    // String Parameters

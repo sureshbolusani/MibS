@@ -29,6 +29,7 @@ class MibSCutGenerator : public BlisConGenerator {
    int auxCount_;
    int maximalCutCount_;
    int numCalledBoundCut_;
+   int numCalledGeneralBendersCut_;
    bool isBigMIncObjSet_;
    double bigMIncObj_;
    OsiSolverInterface * watermelonICSolver_;
@@ -130,10 +131,14 @@ class MibSCutGenerator : public BlisConGenerator {
    int boundCuts(BcpsConstraintPool &conPool, double *passedObjCoeff, double &passedRhs,
 		 bool &isInfeasible);
 
+   /** Add Benders cuts for general problems **/
+   int generalBendersCuts(BcpsConstraintPool &conPool, double *passedObjCoeff, double
+         &passedRhs, bool &isInfeasible);
+
    /** Getting the bounds and constraints of the leaf nodes (for parametric bound cut) **/
    void getConstBoundLeafNodes(AlpsTreeNode *node);
 
-   /** Find the rhs of bound cut by using the leaf nodes of bunding problem **/
+   /** Find the rhs of bound cut by using the leaf nodes of bounding problem **/
    double getRhsParamBoundCut(bool *isTimeLimReached);
 
    /** Find the leaf nodes of bounding problem **/

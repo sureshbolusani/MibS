@@ -281,7 +281,6 @@ private:
     std::vector<int> boundProbLeafNodeCutInf_;
     std::vector<int> boundProbLeafNodeCutStarts_;
   
-
     /** Lower bounds of leaf nodes of boundingProblem **/
     std::vector<double> boundProbLeafLb_;
 
@@ -290,6 +289,30 @@ private:
 
     /** Number of leaf nodes of bounding problem **/
     int boundProbLeafNum_;
+
+    /** root of the general Benders subproblem tree (for parametric general Benders cut) **/
+    AlpsTreeNode *generalBendersSubprobRoot_;
+
+    /** Linking Pool resulting from the general Benders subproblem **/
+    std::map<std::vector<double>, LINKING_SOLUTION> generalBendersSubprobLinkingPool_;
+
+    /** Gathering cut info of general Benders subproblem for parametric general Benders cut **/
+    std::vector<int> generalBendersSubprobCutPoolSource_;
+    std::vector<int> generalBendersSubprobCutPoolStarts_;
+    std::vector<int> generalBendersSubprobCutPoolIndices_;
+    std::vector<double> generalBendersSubprobCutPoolValues_;
+    std::vector<double> generalBendersSubprobCutPoolBounds_;
+    std::vector<int> generalBendersSubprobLeafNodeCutInf_;
+    std::vector<int> generalBendersSubprobLeafNodeCutStarts_;
+
+    /** Lower bounds of leaf nodes of general Benders subproblem **/
+    std::vector<double> generalBendersSubprobLeafLb_;
+
+    /** Upper bounds of leaf nodes of general Benders subproblem **/
+    std::vector<double> generalBendersSubprobLeafUb_;
+
+    /** Number of leaf nodes of general Benders subproblem **/
+    int generalBendersSubprobLeafNum_;
 
     /** Max number of aux columns **/
     //int maxAuxCols_;
@@ -440,6 +463,13 @@ public:
     void setBoundProbLinkingPool(std::map<std::vector<double>, LINKING_SOLUTION> linkingPool)
     {boundProbLinkingPool_ = linkingPool;}
 
+    /** Set pointer to the root node of the general Benders subproblem tree **/
+    void setGeneralBendersSubprobRoot(AlpsTreeNode *ptr) {generalBendersSubprobRoot_ = ptr;}
+
+    /** Set the linking pool resulting from general Benders subproblem **/
+    void setGeneralBendersSubprobLinkingPool(std::map<std::vector<double>, LINKING_SOLUTION> linkingPool)
+    {generalBendersSubprobLinkingPool_ = linkingPool;}
+
     /** Set pointer to the matrix of UL vars in LL problem for all scenarios **/
     void setStocA2Matrix(CoinPackedMatrix *ptr) {stocA2Matrix_ = ptr;}
   
@@ -578,6 +608,13 @@ public:
     /** Get the linking pool resulting from bounding problem **/
     std::map<std::vector<double>, LINKING_SOLUTION> getBoundProbLinkingPool()
     {return boundProbLinkingPool_ ;}
+
+    /** Get pointer to the root node of the general Benders subproblem tree **/
+    AlpsTreeNode * getGeneralBendersSubprobRoot() {return generalBendersSubprobRoot_;}
+
+    /** Get the linking pool resulting from general Benders subproblem **/
+    std::map<std::vector<double>, LINKING_SOLUTION> getGeneralBendersSubprobLinkingPool()
+    {return generalBendersSubprobLinkingPool_ ;}
 
     /** Get the number of scenarios **/
     int getNumScenarios() const {return numScenarios_;}

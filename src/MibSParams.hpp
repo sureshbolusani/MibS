@@ -41,6 +41,8 @@ class MibSParams : public AlpsParameterSet {
      allowRemoveCut,
      useNewPureIntCut,
      useProgresHedg,
+     useGeneralBendersCut,
+     generalBendersCutOptimal,
      endOfBoolParams
   };
   
@@ -110,6 +112,11 @@ class MibSParams : public AlpsParameterSet {
      incDistA2DenumSAA,
      iterationLimitPH,
      nodeLimitPHSubprob,
+     generalBendersCutOptimalType,
+     generalBendersCutDepthLb,
+     generalBendersCutDepthUb,
+     generalBendersCutFreq,
+     generalBendersCutNodeLim,
      endOfIntParams
   };
 
@@ -117,6 +124,7 @@ class MibSParams : public AlpsParameterSet {
   enum dblParams{
       boundCutTimeLim,
       optimalRelGapLimitPHSubprob,
+      generalBendersCutTimeLim,
       endOfDblParams
   };
 
